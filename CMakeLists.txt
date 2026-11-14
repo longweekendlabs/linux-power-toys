@@ -11,6 +11,11 @@ find_package(KF6WindowSystem 6.14 REQUIRED)
 include(GNUInstallDirs)
 
 add_executable(linux-power-toys src/main.cpp)
+file(GLOB awake_icons CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/awake/*.png")
+qt_add_resources(linux-power-toys awake_artwork
+    PREFIX /awake
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/awake"
+    FILES ${awake_icons} assets/awake/NOTICE)
 target_link_libraries(linux-power-toys PRIVATE
     Qt6::Widgets Qt6::DBus KF6::StatusNotifierItem KF6::WindowSystem)
 install(TARGETS linux-power-toys)

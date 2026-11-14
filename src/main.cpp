@@ -46,7 +46,7 @@ constexpr uint activeInhibition = 1;
 constexpr std::array minutes{15, 30, 60, 120};
 enum class Mode { Passive, Timed, Until, Indefinite };
 
-QIcon icon(bool cup, bool active = true)
+QIcon toolboxIcon()
 {
     QIcon result;
     for (const int size : {16, 22, 32, 48, 64}) {
@@ -55,31 +55,36 @@ QIcon icon(bool cup, bool active = true)
         QPainter painter(&pixmap);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.scale(size / 32.0, size / 32.0);
-        const QColor ink(active ? u"#79e2ec"_s : u"#bcc7d4"_s);
+        const QColor ink(u"#79e2ec"_s);
         painter.setPen(QPen(ink, 1.6, Qt::SolidLine, Qt::RoundCap));
-        if (cup) {
-            painter.drawArc(QRectF(19, 12, 8, 8), -90 * 16, 180 * 16);
-            painter.drawLine(QPointF(5, 25), QPointF(23, 25));
-            painter.drawLine(QPointF(10, 6), QPointF(10, 9));
-            painter.drawLine(QPointF(16, 6), QPointF(16, 9));
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(ink);
-            painter.drawRoundedRect(QRectF(7, 11, 15, 11), 3, 3);
-        } else {
-            painter.drawRoundedRect(QRectF(11, 5, 10, 9), 2, 2);
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(ink);
-            painter.drawRoundedRect(QRectF(4, 11, 24, 15), 3, 3);
-            painter.setPen(QPen(QColor(u"#23434c"_s), 1.4));
-            painter.drawLine(QPointF(4, 17), QPointF(28, 17));
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(u"#23434c"_s));
-            painter.drawRoundedRect(QRectF(14, 15, 4, 5), 1, 1);
-        }
+        painter.drawRoundedRect(QRectF(11, 5, 10, 9), 2, 2);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(ink);
+        painter.drawRoundedRect(QRectF(4, 11, 24, 15), 3, 3);
+        painter.setPen(QPen(QColor(u"#23434c"_s), 1.4));
+        painter.drawLine(QPointF(4, 17), QPointF(28, 17));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(u"#23434c"_s));
+        painter.drawRoundedRect(QRectF(14, 15, 4, 5), 1, 1);
         painter.end();
         result.addPixmap(pixmap);
     }
     return result;
+}
+
+const QIcon &awakeTrayIcon(Mode mode)
+{
+    static const auto icons = [] {
+        const std::array names{u"disabled"_s, u"timed"_s, u"expirable"_s, u"indefinite"_s};
+        std::array<QIcon, names.size()> result;
+        for (size_t i = 0; i < names.size(); ++i) {
+            for (const int size : {16, 24, 32, 48}) {
+                result[i].addFile(u":/awake/%1-%2.png"_s.arg(names[i]).arg(size), QSize(size, size));
+            }
+        }
+        return result;
+    }();
+    return icons[static_cast<size_t>(mode)];
 }
 
 QString durationLabel(int value)
@@ -158,7 +163,7 @@ public:
     int durationMinutes() const { return sessionMinutes; }
     bool screenOn() const { return keepScreen; }
     bool isEffective() const { return suspendActive && (!keepScreen || displayActive); }
-    const QIcon &trayIcon() const { return isEffective() ? activeCup : passiveCup; }
+    const QIcon &trayIcon() const { return awakeTrayIcon(isEffective() ? mode : Mode::Passive); }
 
 signals:
     void changed();
@@ -290,8 +295,6 @@ private:
     bool keepScreen;
     bool suspendActive = false;
     bool displayActive = false;
-    const QIcon activeCup = icon(true);
-    const QIcon passiveCup = icon(true, false);
 };
 
 class Toggle final : public QCheckBox {
@@ -326,7 +329,7 @@ public:
     SettingsWindow()
     {
         setWindowTitle(tr("Linux Power Toys"));
-        setWindowIcon(icon(false));
+        setWindowIcon(toolboxIcon());
         resize(976, 560);
         setMinimumSize(560, 470);
         auto *layout = new QHBoxLayout(this);
@@ -339,7 +342,7 @@ public:
         nav->setContentsMargins(10, 12, 10, 12);
         nav->setSpacing(4);
         const std::array names{tr("Home"), tr("Always Awake"), tr("Tray Icon Drawer")};
-        const std::array icons{QIcon::fromTheme(u"go-home"_s), icon(true),
+        const std::array icons{QIcon::fromTheme(u"go-home"_s), QIcon(u":/awake/awake-32.png"_s),
                               QIcon::fromTheme(u"view-grid"_s)};
         for (int index = 0; index < int(names.size()); ++index) {
             auto *button = new QPushButton(icons[index], names[index]);
@@ -520,7 +523,7 @@ private:
         auto *layout = new QHBoxLayout(frame);
         layout->setContentsMargins(14, 8, 14, 8);
         if (detail > 0) {
-            const QIcon glyph = detail == 1 ? icon(true) : QIcon::fromTheme(u"view-grid"_s);
+            const QIcon glyph = detail == 1 ? QIcon(u":/awake/awake-32.png"_s) : QIcon::fromTheme(u"view-grid"_s);
             auto *label = new QLabel;
             label->setPixmap(glyph.pixmap(26, 26));
             layout->addWidget(label);
@@ -648,7 +651,7 @@ private:
         if (enabled && !awake) {
             awake = std::make_unique<Awake>(keepScreen());
             connect(awake.get(), &Awake::changed, this, &Toolbox::sync);
-            awakeTray = makeTray(u"linux-power-toys-awake"_s, tr("Always Awake"), icon(true, false));
+            awakeTray = makeTray(u"linux-power-toys-awake"_s, tr("Always Awake"), awake->trayIcon());
             buildAwakeMenu();
         } else if (!enabled && awake) {
             awakeTray.reset();
@@ -698,7 +701,7 @@ private:
             return;
         }
         if (!toolboxTray) {
-            toolboxTray = makeTray(u"linux-power-toys"_s, tr("Linux Power Toys"), icon(false));
+            toolboxTray = makeTray(u"linux-power-toys"_s, tr("Linux Power Toys"), toolboxIcon());
             auto *menu = new QMenu;
             toolboxAwake = menu->addAction(tr("Always Awake"));
             toolboxAwake->setCheckable(true);
