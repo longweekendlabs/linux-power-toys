@@ -767,6 +767,9 @@ private:
             ShowSettings();
             window->openPage(1);
         });
+        connect(menu->addAction(tr("Exit")), &QAction::triggered, this, [this] {
+            enableAwake(false);
+        }, Qt::QueuedConnection);
         for (auto *action : {passive, timedAction, untilAction, indefinite}) {
             action->setCheckable(true);
         }

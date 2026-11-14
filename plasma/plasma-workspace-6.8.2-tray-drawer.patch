@@ -86,10 +86,10 @@ index 007e62c..91d7a84 100644
              elide: Text.ElideRight
 diff --git a/applets/systemtray/qml/DrawerDropTarget.qml b/applets/systemtray/qml/DrawerDropTarget.qml
 new file mode 100644
-index 0000000..18fb8a8
+index 0000000..5a3be07
 --- /dev/null
 +++ b/applets/systemtray/qml/DrawerDropTarget.qml
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,64 @@
 +// SPDX-License-Identifier: LGPL-2.0-or-later
 +import QtQuick
 +import org.kde.kirigami as Kirigami
@@ -98,9 +98,14 @@ index 0000000..18fb8a8
 +    id: target
 +    required property string mimeType
 +    keys: [mimeType]
++    property bool showInsertion: false
++    property bool verticalOrder: false
++    property bool reverseOrder: false
++    property bool trailingHalf: false
++    readonly property bool insertAfter: trailingHalf !== reverseOrder
 +
 +    signal dragAccepted()
-+    signal moveRequested()
++    signal moveRequested(bool after)
 +
 +    function matches(event) {
 +        // Fetching payload bytes here blocks Qt Wayland while it waits for
@@ -108,8 +113,15 @@ index 0000000..18fb8a8
 +        return mimeType !== "" && event.formats.includes(mimeType);
 +    }
 +
++    function updatePosition(event) {
++        trailingHalf = showInsertion && (verticalOrder ? event.y >= height / 2 : event.x >= width / 2);
++    }
++
++    onPositionChanged: event => updatePosition(event)
++
 +    onEntered: event => {
 +        if (matches(event)) {
++            updatePosition(event);
 +            dragAccepted();
 +        } else {
 +            event.accepted = false;
@@ -119,16 +131,26 @@ index 0000000..18fb8a8
 +    Rectangle {
 +        anchors.fill: parent
 +        anchors.margins: 1
-+        visible: target.containsDrag
++        visible: target.containsDrag && !target.showInsertion
 +        color: Qt.alpha(Kirigami.Theme.highlightColor, 0.15)
 +        border.color: Kirigami.Theme.highlightColor
 +        radius: 4
 +    }
 +
++    Rectangle {
++        visible: target.containsDrag && target.showInsertion
++        width: target.verticalOrder ? target.width - 4 : 2
++        height: target.verticalOrder ? 2 : target.height - 4
++        x: target.verticalOrder ? 2 : target.trailingHalf ? target.width - width : 0
++        y: target.verticalOrder ? (target.trailingHalf ? target.height - height : 0) : 2
++        color: Kirigami.Theme.highlightColor
++    }
++
 +    onDropped: drop => {
 +        if (matches(drop)) {
++            updatePosition(drop);
 +            drop.accept(Qt.MoveAction);
-+            moveRequested();
++            moveRequested(showInsertion && insertAfter);
 +        }
 +    }
 +}
@@ -206,7 +228,7 @@ index a7e6f96..d935da3 100644
              height: hiddenTasks.cellHeight
              Accessible.role: Accessible.ListItem // needed to get the GridView description or role announced
 diff --git a/applets/systemtray/qml/ItemLoader.qml b/applets/systemtray/qml/ItemLoader.qml
-index 72ebc1c..1508871 100644
+index 72ebc1c..53c9734 100644
 --- a/applets/systemtray/qml/ItemLoader.qml
 +++ b/applets/systemtray/qml/ItemLoader.qml
 @@ -9,6 +9,9 @@ pragma ComponentBehavior: Bound
@@ -219,7 +241,7 @@ index 72ebc1c..1508871 100644
      required property int index
      required property int effectiveStatus
      required property var model
-@@ -28,6 +31,24 @@ Loader {
+@@ -28,6 +31,27 @@ Loader {
          return ""
      }
  
@@ -234,8 +256,11 @@ index 72ebc1c..1508871 100644
 +            DrawerDropTarget {
 +                anchors.fill: parent
 +                mimeType: delegate.trayRoot.drawerMimeType
-+                onMoveRequested: delegate.trayRoot.commitDrawerDrop(
-+                    delegate.trayRoot.drawerDragSource, delegate.toPanel, dragLayer.itemId)
++                showInsertion: delegate.toPanel
++                verticalOrder: delegate.trayRoot.panelInsertionVertical
++                reverseOrder: delegate.trayRoot.panelInsertionReversed
++                onMoveRequested: after => delegate.trayRoot.commitDrawerDrop(
++                    delegate.trayRoot.drawerDragSource, delegate.toPanel, dragLayer.itemId, after)
 +            }
 +
 +        }
@@ -245,11 +270,18 @@ index 72ebc1c..1508871 100644
      // See https://bugreports.qt.io/browse/QTBUG-125070
      on__UrlChanged: {
 diff --git a/applets/systemtray/qml/main.qml b/applets/systemtray/qml/main.qml
-index 8e56f1f..0189016 100644
+index 8e56f1f..e426e24 100644
 --- a/applets/systemtray/qml/main.qml
 +++ b/applets/systemtray/qml/main.qml
-@@ -36,6 +36,77 @@ ContainmentItem {
+@@ -34,8 +34,84 @@ ContainmentItem {
+     readonly property alias visibleLayout: tasksGrid
+     readonly property alias hiddenLayout: expandedRepresentation.hiddenLayout
      readonly property bool oneRowOrColumn: tasksGrid.rowsOrColumns === 1
++    // Follow the GridView's traversal axis even when a thick panel fits several rows.
++    readonly property bool panelInsertionVertical: vertical === oneRowOrColumn
++    readonly property bool panelInsertionReversed: panelInsertionVertical
++        ? vertical && reverseLayout
++        : tasksGrid.effectiveLayoutDirection === Qt.RightToLeft
  
      readonly property alias hiddenModel: hiddenModel
 +    readonly property bool drawerEnabled: Plasmoid.drawerEnabled
@@ -301,11 +333,11 @@ index 8e56f1f..0189016 100644
 +        }
 +    }
 +
-+    function commitDrawerDrop(source, toPanel, before) {
++    function commitDrawerDrop(source, toPanel, target, after = false) {
 +        if (!drawerEnabled || !source || source !== drawerDragSource) {
 +            return;
 +        }
-+        drawerDrop = { id: source.itemId, toPanel: toPanel, before: before };
++        drawerDrop = { id: source.itemId, toPanel: toPanel, target: target, after: after };
 +    }
 +
 +    function finishDrawerDrag(action) {
@@ -316,7 +348,7 @@ index 8e56f1f..0189016 100644
 +        if (action === Qt.MoveAction && drop) {
 +            // Updating the model can destroy the source delegate.
 +            Qt.callLater(() => {
-+                if (Plasmoid.moveDrawerItem(drop.id, drop.toPanel, drop.before)) {
++                if (Plasmoid.moveDrawerItem(drop.id, drop.toPanel, drop.target, drop.after)) {
 +                    activeModel.invalidateFilter();
 +                    hiddenModel.invalidateFilter();
 +                }
@@ -326,7 +358,7 @@ index 8e56f1f..0189016 100644
  
      Component.onCompleted: {
          // We need all the plasmoiditems to be there for correct working of shortcuts.
-@@ -56,7 +127,7 @@ ContainmentItem {
+@@ -56,7 +132,7 @@ ContainmentItem {
      KItemModels.KSortFilterProxyModel {
          id: activeModel
          filterRoleName: "effectiveStatus"
@@ -335,7 +367,7 @@ index 8e56f1f..0189016 100644
          filterRowCallback: (sourceRow, sourceParent) => {
              let value = sourceModel.data(sourceModel.index(sourceRow, 0, sourceParent), filterRole);
              return value === PlasmaCore.Types.ActiveStatus;
-@@ -67,7 +138,7 @@ ContainmentItem {
+@@ -67,7 +143,7 @@ ContainmentItem {
      KItemModels.KSortFilterProxyModel {
          id: hiddenModel
          filterRoleName: "effectiveStatus"
@@ -344,7 +376,7 @@ index 8e56f1f..0189016 100644
          filterRowCallback: (sourceRow, sourceParent) => {
              let value = sourceModel.data(sourceModel.index(sourceRow, 0, sourceParent), filterRole);
              return value === PlasmaCore.Types.PassiveStatus
-@@ -245,11 +316,23 @@ ContainmentItem {
+@@ -245,11 +321,23 @@ ContainmentItem {
  
                  model: activeModel
  
@@ -368,7 +400,7 @@ index 8e56f1f..0189016 100644
  
                      // We need to recalculate the stacking order of the z values due to how keyboard navigation works
                      // the tab order depends exclusively from this, so we redo it as the position in the list
-@@ -278,7 +361,24 @@ ContainmentItem {
+@@ -278,7 +366,24 @@ ContainmentItem {
                  Layout.fillHeight: !vertical
                  Layout.alignment: vertical ? Qt.AlignVCenter : Qt.AlignHCenter
                  iconSize: tasksGrid.itemSize
@@ -394,7 +426,7 @@ index 8e56f1f..0189016 100644
              }
          }
  
-@@ -322,7 +422,7 @@ ContainmentItem {
+@@ -322,7 +427,7 @@ ContainmentItem {
                  : PlasmaCore.AppletPopup.AtScreenEdges | PlasmaCore.AppletPopup.AtPanelEdges
  
  
@@ -480,7 +512,7 @@ index 1cca2c7..b5eb9a0 100644
 +    SystemTraySettings *m_drawerSettings = nullptr;
  };
 diff --git a/applets/systemtray/systemtray.cpp b/applets/systemtray/systemtray.cpp
-index 4c1db7a..d6e9dbd 100644
+index 4c1db7a..12a5c4b 100644
 --- a/applets/systemtray/systemtray.cpp
 +++ b/applets/systemtray/systemtray.cpp
 @@ -17,7 +17,10 @@
@@ -494,15 +526,19 @@ index 4c1db7a..d6e9dbd 100644
  #include <QMenu>
  #include <QMetaMethod>
  #include <QMetaObject>
-@@ -26,6 +29,7 @@
+@@ -26,8 +29,11 @@
  #include <QQuickWindow>
  #include <QScreen>
  #include <QTimer>
 +#include <QUuid>
  #include <qpa/qplatformscreen.h>
  
++#include <optional>
++
  #include <Plasma/Applet>
-@@ -40,6 +44,49 @@
+ #include <Plasma/Corona>
+ #include <Plasma/PluginLoader>
+@@ -40,6 +46,49 @@
  
  using namespace Qt::StringLiterals;
  
@@ -552,7 +588,7 @@ index 4c1db7a..d6e9dbd 100644
  static void showSystemTrayMenuWayland(QMenu *menu, QQuickItem *trayItem, Plasma::Types::Location location)
  {
      QWindow *trayWindow = trayItem->window();
-@@ -153,6 +200,12 @@ void SystemTray::initSettingsAndRegistry()
+@@ -153,6 +202,12 @@ void SystemTray::initSettingsAndRegistry()
  {
      if (!m_settings) {
          m_settings = new SystemTraySettings(configScheme(), this);
@@ -565,7 +601,7 @@ index 4c1db7a..d6e9dbd 100644
          connect(m_settings, &SystemTraySettings::enabledPluginsChanged, this, &SystemTray::onEnabledAppletsChanged);
      }
  
-@@ -394,11 +447,88 @@ SystemTrayModel *SystemTray::systemTrayModel()
+@@ -394,11 +449,96 @@ SystemTrayModel *SystemTray::systemTrayModel()
      return m_systemTrayModel;
  }
  
@@ -579,9 +615,9 @@ index 4c1db7a..d6e9dbd 100644
 +    return QUuid::createUuid().toString(QUuid::WithoutBraces);
 +}
 +
-+bool SystemTray::moveDrawerItem(const QString &itemId, bool toPanel, const QString &before)
++bool SystemTray::moveDrawerItem(const QString &itemId, bool toPanel, const QString &target, bool after)
 +{
-+    if (!drawerEnabled() || itemId.isEmpty() || itemId == before) {
++    if (!drawerEnabled() || itemId.isEmpty() || itemId == target) {
 +        return false;
 +    }
 +    auto *model = sortedSystemTrayModel();
@@ -589,7 +625,8 @@ index 4c1db7a..d6e9dbd 100644
 +    const auto statusRole = static_cast<int>(BaseModel::BaseRole::EffectiveStatus);
 +    QStringList panel;
 +    QStringList hidden;
-+    bool found = false;
++    std::optional<bool> wasOnPanel;
++    qsizetype oldPosition = -1;
 +    for (int row = 0; row < model->rowCount(); ++row) {
 +        const auto index = model->index(row, 0);
 +        const QString id = index.data(idRole).toString();
@@ -598,15 +635,16 @@ index 4c1db7a..d6e9dbd 100644
 +            continue;
 +        }
 +        if (id == itemId) {
-+            if (found) {
++            if (wasOnPanel.has_value()) {
 +                return false; // The shared placement ID cannot distinguish these items.
 +            }
-+            found = true;
++            wasOnPanel = status == Plasma::Types::ActiveStatus;
++            oldPosition = (*wasOnPanel ? panel : hidden).size();
 +            continue;
 +        }
 +        (status == Plasma::Types::ActiveStatus ? panel : hidden).append(id);
 +    }
-+    if (!found) {
++    if (!wasOnPanel.has_value()) {
 +        return false;
 +    }
 +
@@ -614,10 +652,16 @@ index 4c1db7a..d6e9dbd 100644
 +    // ordering independently of the explicit overrides made by a drop.
 +    QStringList placement;
 +    auto &destination = toPanel ? panel : hidden;
-+    if (!before.isEmpty() && !destination.contains(before)) {
++    const auto targetPosition = target.isEmpty() ? destination.size() : destination.indexOf(target);
++    if (targetPosition < 0) {
 +        return false;
 +    }
-+    destination.insert(before.isEmpty() ? destination.size() : destination.indexOf(before), itemId);
++    const auto insertion = targetPosition + (!target.isEmpty() && after ? 1 : 0);
++    const bool changingVisibility = *wasOnPanel != toPanel;
++    if (!changingVisibility && oldPosition == insertion) {
++        return false;
++    }
++    destination.insert(insertion, itemId);
 +    const auto &previous = m_settings->drawerPlacement();
 +    QSet<QString> recorded;
 +    const auto append = [&](const QStringList &ids) {
@@ -628,7 +672,7 @@ index 4c1db7a..d6e9dbd 100644
 +            recorded.insert(id);
 +            const auto shown = u'+' + id;
 +            const auto drawer = u'-' + id;
-+            placement.append(id == itemId ? (toPanel ? shown : drawer)
++            placement.append(id == itemId && changingVisibility ? (toPanel ? shown : drawer)
 +                                          : previous.contains(shown) ? shown
 +                                          : previous.contains(drawer) ? drawer : u'=' + id);
 +        }
@@ -656,7 +700,7 @@ index 4c1db7a..d6e9dbd 100644
      return m_sortedSystemTrayModel;
  }
 diff --git a/applets/systemtray/systemtray.h b/applets/systemtray/systemtray.h
-index 4bc2a90..baf7439 100644
+index 4bc2a90..afa34a2 100644
 --- a/applets/systemtray/systemtray.h
 +++ b/applets/systemtray/systemtray.h
 @@ -31,6 +31,7 @@ class SystemTray : public Plasma::Containment
@@ -673,7 +717,7 @@ index 4bc2a90..baf7439 100644
  
 +    bool drawerEnabled() const;
 +    Q_INVOKABLE QString newDrawerDragToken() const;
-+    Q_INVOKABLE bool moveDrawerItem(const QString &itemId, bool toPanel, const QString &before);
++    Q_INVOKABLE bool moveDrawerItem(const QString &itemId, bool toPanel, const QString &target, bool after);
 +
 +Q_SIGNALS:
 +    void drawerEnabledChanged();
