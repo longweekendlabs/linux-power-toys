@@ -1,0 +1,34 @@
+cmake_minimum_required(VERSION 3.24)
+project(LinuxPowerToysTray LANGUAGES CXX)
+
+set(QT_MAJOR_VERSION 6)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_AUTOMOC ON)
+set(BUILD_TESTING OFF)
+set(PLASMA_SKIP_APPLET_INSTALL ON)
+
+find_package(ECM REQUIRED NO_MODULE)
+list(APPEND CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
+include(KDEInstallDirs)
+include(ECMQmlModule)
+include(KDECMakeSettings)
+include(ECMQtDeclareLoggingCategory)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+
+find_package(Qt6 6.11 REQUIRED COMPONENTS Quick Widgets DBus)
+find_package(Qt6GuiPrivate 6.11 REQUIRED)
+find_package(KF6 REQUIRED COMPONENTS Config CoreAddons IconThemes I18n KIO JobWidgets Service ItemModels WindowSystem XmlGui StatusNotifierItem)
+find_package(Plasma 6.8.2 EXACT REQUIRED)
+find_package(PlasmaQuick 6.8.2 EXACT REQUIRED)
+
+set(PLASMA_WORKSPACE_SOURCE "" CACHE PATH "Patched Plasma Workspace 6.8.2 source")
+if(NOT EXISTS "${PLASMA_WORKSPACE_SOURCE}/applets/systemtray/CMakeLists.txt")
+    message(FATAL_ERROR "Set PLASMA_WORKSPACE_SOURCE to the patched Plasma Workspace source.")
+endif()
+set(plasma-workspace_SOURCE_DIR "${PLASMA_WORKSPACE_SOURCE}")
+
+# Match Fedora's Plasma Workspace configuration when building its tray sources.
+file(WRITE "${CMAKE_BINARY_DIR}/config-X11.h" "#define HAVE_X11 1\n")
+include_directories("${CMAKE_BINARY_DIR}" "${PLASMA_WORKSPACE_SOURCE}/libdbusmenuqt")
+add_subdirectory("${PLASMA_WORKSPACE_SOURCE}/libdbusmenuqt" dbusmenu)
+add_subdirectory("${PLASMA_WORKSPACE_SOURCE}/applets/systemtray" systemtray)

@@ -1,0 +1,3 @@
+[Service]
+Environment="QT_PLUGIN_PATH=@LIBDIR@/linux-power-toys/plasma/plugins"
+Environment="QML_IMPORT_PATH=@LIBDIR@/linux-power-toys/plasma/qml"
