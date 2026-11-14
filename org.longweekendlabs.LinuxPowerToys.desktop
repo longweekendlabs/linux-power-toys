@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Linux Power Toys
+Comment=Configure desktop utilities
+Exec=linux-power-toys
+Icon=applications-utilities
+Categories=Utility;
+Terminal=false

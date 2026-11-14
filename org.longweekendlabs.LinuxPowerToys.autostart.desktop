@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Linux Power Toys
+Exec=linux-power-toys --background
+OnlyShowIn=KDE;
+NoDisplay=true
+Terminal=false

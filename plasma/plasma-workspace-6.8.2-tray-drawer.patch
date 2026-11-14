@@ -1,0 +1,776 @@
+diff --git a/applets/systemtray/CMakeLists.txt b/applets/systemtray/CMakeLists.txt
+index c670340..2a37a1f 100644
+--- a/applets/systemtray/CMakeLists.txt
++++ b/applets/systemtray/CMakeLists.txt
+@@ -62,6 +62,7 @@ plasma_add_applet(org.kde.plasma.systemtray
+         qml/BackgroundAppItem.qml
+         qml/ConfigGeneral.qml
+         qml/CurrentItemHighLight.qml
++        qml/DrawerDropTarget.qml
+         qml/ExpanderArrow.qml
+         qml/ItemLoader.qml
+         qml/PlasmoidItem.qml
+diff --git a/applets/systemtray/main.xml b/applets/systemtray/main.xml
+index 78e4855..b7e81db 100644
+--- a/applets/systemtray/main.xml
++++ b/applets/systemtray/main.xml
+@@ -14,6 +14,9 @@
+       <label>All StatusNotifier items that shouldn't be visible at all. It's a comma-separated string list of StatusNotifier ids.</label>
+       <default></default>
+     </entry>
++    <entry name="linuxPowerToysPlacement" type="StringList" hidden="true">
++      <default></default>
++    </entry>
+     <entry name="hiddenItems" type="StringList">
+       <label>All items that are hidden, forced always in the popup. It's a comma-separated string list of unique identifiers that are either plasmoid plugin ids or StatusNotifier ids.</label>
+       <default></default>
+diff --git a/applets/systemtray/qml/AbstractItem.qml b/applets/systemtray/qml/AbstractItem.qml
+index 007e62c..91d7a84 100644
+--- a/applets/systemtray/qml/AbstractItem.qml
++++ b/applets/systemtray/qml/AbstractItem.qml
+@@ -98,6 +98,38 @@ PlasmaCore.ToolTipArea {
+         }
+     }
+ 
++    Loader {
++        active: root.drawerEnabled && !!abstractItem.itemId
++        sourceComponent: Item {
++            id: dragLayer
++            readonly property string itemId: abstractItem.itemId
++            property DragHandler handler
++            Component.onCompleted: handler = dragHandler.createObject(mouseArea)
++
++            Component {
++                id: dragHandler
++                DragHandler {
++                    target: null
++                    acceptedButtons: Qt.LeftButton
++                    onActiveChanged: {
++                        if (active) {
++                            root.beginDrawerDrag(dragLayer, abstractItem.iconContainer);
++                        } else {
++                            root.cancelPendingDrawerDrag(dragLayer);
++                        }
++                    }
++                }
++            }
++
++            Component.onDestruction: {
++                handler?.destroy();
++                if (root.drawerDragSource === dragLayer) {
++                    root.finishDrawerDrag(Qt.IgnoreAction);
++                }
++            }
++        }
++    }
++
+     RowLayout {
+         anchors.fill: abstractItem
+         anchors.margins: abstractItem.inHiddenLayout ? abstractItem.margins : 0
+@@ -168,6 +200,7 @@ PlasmaCore.ToolTipArea {
+             readonly property int size: abstractItem.inVisibleLayout ? root.itemSize : Kirigami.Units.iconSizes.medium
+ 
+             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
++            Layout.fillWidth: root.drawerEnabled && abstractItem.inHiddenLayout
+             implicitWidth: root.vertical && abstractItem.inVisibleLayout ? abstractItem.width : size
+             implicitHeight: !root.vertical && abstractItem.inVisibleLayout ? abstractItem.height : size
+         }
+@@ -177,7 +210,7 @@ PlasmaCore.ToolTipArea {
+             Layout.fillWidth: true
+             maximumLineCount: abstractItem.maxTextLines
+ 
+-            visible: abstractItem.inHiddenLayout
++            visible: abstractItem.inHiddenLayout && !root.drawerEnabled
+ 
+             verticalAlignment: Text.AlignVCenter
+             elide: Text.ElideRight
+diff --git a/applets/systemtray/qml/DrawerDropTarget.qml b/applets/systemtray/qml/DrawerDropTarget.qml
+new file mode 100644
+index 0000000..18fb8a8
+--- /dev/null
++++ b/applets/systemtray/qml/DrawerDropTarget.qml
+@@ -0,0 +1,42 @@
++// SPDX-License-Identifier: LGPL-2.0-or-later
++import QtQuick
++import org.kde.kirigami as Kirigami
++
++DropArea {
++    id: target
++    required property string mimeType
++    keys: [mimeType]
++
++    signal dragAccepted()
++    signal moveRequested()
++
++    function matches(event) {
++        // Fetching payload bytes here blocks Qt Wayland while it waits for
++        // the source, which runs on this same GUI thread.
++        return mimeType !== "" && event.formats.includes(mimeType);
++    }
++
++    onEntered: event => {
++        if (matches(event)) {
++            dragAccepted();
++        } else {
++            event.accepted = false;
++        }
++    }
++
++    Rectangle {
++        anchors.fill: parent
++        anchors.margins: 1
++        visible: target.containsDrag
++        color: Qt.alpha(Kirigami.Theme.highlightColor, 0.15)
++        border.color: Kirigami.Theme.highlightColor
++        radius: 4
++    }
++
++    onDropped: drop => {
++        if (matches(drop)) {
++            drop.accept(Qt.MoveAction);
++            moveRequested();
++        }
++    }
++}
+diff --git a/applets/systemtray/qml/ExpandedRepresentation.qml b/applets/systemtray/qml/ExpandedRepresentation.qml
+index 7e29cb1..b4ef074 100644
+--- a/applets/systemtray/qml/ExpandedRepresentation.qml
++++ b/applets/systemtray/qml/ExpandedRepresentation.qml
+@@ -18,8 +18,15 @@ import org.kde.plasma.plasmoid
+ Item {
+     id: popup
+ 
+-    Layout.minimumWidth: Kirigami.Units.gridUnit * 24
+-    Layout.minimumHeight: Kirigami.Units.gridUnit * 24
++    readonly property bool compactDrawer: root.drawerEnabled && !systemTrayState.activeApplet
++    Layout.minimumWidth: Kirigami.Units.gridUnit * (compactDrawer ? 12 : 24)
++    readonly property int drawerHeight: trayHeading.implicitHeight
++        + Math.max(1, Math.min(4, Math.ceil(hiddenLayout.count / hiddenLayout.columns)))
++          * hiddenLayout.cellHeight + Kirigami.Units.largeSpacing * 2
++
++    Layout.minimumHeight: compactDrawer ? drawerHeight : Kirigami.Units.gridUnit * 24
++    Layout.maximumWidth: compactDrawer ? Layout.minimumWidth : Infinity
++    Layout.maximumHeight: compactDrawer ? drawerHeight : Infinity
+ 
+     property alias hiddenLayout: hiddenItemsView.layout
+     property alias plasmoidContainer: container
+@@ -73,7 +80,8 @@ Item {
+                 leftPadding: backButton.visible ? 0 : Kirigami.Units.largeSpacing
+ 
+                 level: 1
+-                text: systemTrayState.activeApplet ? systemTrayState.activeApplet.plasmoid.title : i18n("Status and Notifications")
++                text: systemTrayState.activeApplet ? systemTrayState.activeApplet.plasmoid.title
++                    : popup.compactDrawer ? i18n("Hidden icons") : i18n("Status and Notifications")
+                 maximumLineCount: 1
+                 textFormat: Text.PlainText
+                 elide: Text.ElideRight
+diff --git a/applets/systemtray/qml/HiddenItemsView.qml b/applets/systemtray/qml/HiddenItemsView.qml
+index a7e6f96..d935da3 100644
+--- a/applets/systemtray/qml/HiddenItemsView.qml
++++ b/applets/systemtray/qml/HiddenItemsView.qml
+@@ -24,7 +24,7 @@ PlasmaComponents3.ScrollView {
+     GridView {
+         id: hiddenTasks
+ 
+-        readonly property int columns: 2
++        readonly property int columns: root.drawerEnabled ? 5 : 2
+         readonly property int minimumColumns: 4
+ 
+         // Keep these in sync with ItemLoader.qml
+@@ -42,7 +42,7 @@ PlasmaComponents3.ScrollView {
+         }
+ 
+         cellWidth: Math.floor(hiddenTasksView.availableWidth / columns)
+-        cellHeight: delegateHeight
++        cellHeight: root.drawerEnabled ? Kirigami.Units.gridUnit * 2 : delegateHeight
+ 
+         currentIndex: -1
+         highlight: PlasmaExtras.Highlight {}
+@@ -53,7 +53,18 @@ PlasmaComponents3.ScrollView {
+         readonly property int itemCount: model.count
+ 
+         model: root.hiddenModel
++        Loader {
++            anchors.fill: parent
++            z: -1
++            active: root.drawerEnabled
++            sourceComponent: DrawerDropTarget {
++                mimeType: root.drawerMimeType
++                onMoveRequested: root.commitDrawerDrop(root.drawerDragSource, false, "")
++            }
++        }
++
+         delegate: ItemLoader {
++            trayRoot: root
+             width: hiddenTasks.cellWidth
+             height: hiddenTasks.cellHeight
+             Accessible.role: Accessible.ListItem // needed to get the GridView description or role announced
+diff --git a/applets/systemtray/qml/ItemLoader.qml b/applets/systemtray/qml/ItemLoader.qml
+index 72ebc1c..1508871 100644
+--- a/applets/systemtray/qml/ItemLoader.qml
++++ b/applets/systemtray/qml/ItemLoader.qml
+@@ -9,6 +9,9 @@ pragma ComponentBehavior: Bound
+ import QtQuick
+ 
+ Loader {
++    id: delegate
++    required property Item trayRoot
++    property bool toPanel: false
+     required property int index
+     required property int effectiveStatus
+     required property var model
+@@ -28,6 +31,24 @@ Loader {
+         return ""
+     }
+ 
++    Loader {
++        anchors.fill: parent
++        z: 5
++        active: delegate.trayRoot.drawerEnabled && !!delegate.item && !!delegate.model.itemId
++        sourceComponent: Item {
++            id: dragLayer
++            readonly property string itemId: delegate.model.itemId
++
++            DrawerDropTarget {
++                anchors.fill: parent
++                mimeType: delegate.trayRoot.drawerMimeType
++                onMoveRequested: delegate.trayRoot.commitDrawerDrop(
++                    delegate.trayRoot.drawerDragSource, delegate.toPanel, dragLayer.itemId)
++            }
++
++        }
++    }
++
+     // Avoid relying on context properties using initialProperties with bindings.
+     // See https://bugreports.qt.io/browse/QTBUG-125070
+     on__UrlChanged: {
+diff --git a/applets/systemtray/qml/main.qml b/applets/systemtray/qml/main.qml
+index 8e56f1f..0189016 100644
+--- a/applets/systemtray/qml/main.qml
++++ b/applets/systemtray/qml/main.qml
+@@ -36,6 +36,77 @@ ContainmentItem {
+     readonly property bool oneRowOrColumn: tasksGrid.rowsOrColumns === 1
+ 
+     readonly property alias hiddenModel: hiddenModel
++    readonly property bool drawerEnabled: Plasmoid.drawerEnabled
++    readonly property string drawerMimeType: drawerDragToken
++        ? "application/x-linux-power-toys-tray-item-" + drawerDragToken : ""
++    property string drawerDragToken: ""
++    property var drawerDrop: null
++    property var drawerDragSource: null
++
++    onDrawerEnabledChanged: {
++        if (!drawerEnabled) {
++            finishDrawerDrag(Qt.IgnoreAction);
++        }
++    }
++
++    // Keep the QDrag owner alive if a tray item disappears during a drag.
++    Item {
++        id: drawerDrag
++        Drag.dragType: Drag.Automatic
++        Drag.source: root.drawerDragSource
++        Drag.mimeData: ({ [root.drawerMimeType]: "" })
++        Drag.onDragFinished: action => root.finishDrawerDrag(action)
++        Drag.supportedActions: Qt.MoveAction
++        Drag.hotSpot.x: 12
++        Drag.hotSpot.y: 12
++    }
++
++    function beginDrawerDrag(source, icon) {
++        if (drawerDragSource || drawerDrag.Drag.active) {
++            return;
++        }
++        const token = Plasmoid.newDrawerDragToken();
++        drawerDragSource = source;
++        drawerDragToken = token;
++        drawerDrag.Drag.imageSource = "";
++        if (!icon.grabToImage(result => {
++            if (drawerDragToken === token) {
++                drawerDrag.Drag.imageSource = result.url;
++                drawerDrag.Drag.active = true;
++            }
++        })) {
++            drawerDrag.Drag.active = true;
++        }
++    }
++
++    function cancelPendingDrawerDrag(source) {
++        if (!drawerDrag.Drag.active && drawerDragSource === source) {
++            finishDrawerDrag(Qt.IgnoreAction);
++        }
++    }
++
++    function commitDrawerDrop(source, toPanel, before) {
++        if (!drawerEnabled || !source || source !== drawerDragSource) {
++            return;
++        }
++        drawerDrop = { id: source.itemId, toPanel: toPanel, before: before };
++    }
++
++    function finishDrawerDrag(action) {
++        const drop = drawerDrop;
++        drawerDrop = null;
++        drawerDragSource = null;
++        drawerDragToken = "";
++        if (action === Qt.MoveAction && drop) {
++            // Updating the model can destroy the source delegate.
++            Qt.callLater(() => {
++                if (Plasmoid.moveDrawerItem(drop.id, drop.toPanel, drop.before)) {
++                    activeModel.invalidateFilter();
++                    hiddenModel.invalidateFilter();
++                }
++            });
++        }
++    }
+ 
+     Component.onCompleted: {
+         // We need all the plasmoiditems to be there for correct working of shortcuts.
+@@ -56,7 +127,7 @@ ContainmentItem {
+     KItemModels.KSortFilterProxyModel {
+         id: activeModel
+         filterRoleName: "effectiveStatus"
+-        dynamicSortFilter: !systemTrayState.expanded
++        dynamicSortFilter: !systemTrayState.expanded || root.drawerEnabled
+         filterRowCallback: (sourceRow, sourceParent) => {
+             let value = sourceModel.data(sourceModel.index(sourceRow, 0, sourceParent), filterRole);
+             return value === PlasmaCore.Types.ActiveStatus;
+@@ -67,7 +138,7 @@ ContainmentItem {
+     KItemModels.KSortFilterProxyModel {
+         id: hiddenModel
+         filterRoleName: "effectiveStatus"
+-        dynamicSortFilter: !systemTrayState.expanded
++        dynamicSortFilter: !systemTrayState.expanded || root.drawerEnabled
+         filterRowCallback: (sourceRow, sourceParent) => {
+             let value = sourceModel.data(sourceModel.index(sourceRow, 0, sourceParent), filterRole);
+             return value === PlasmaCore.Types.PassiveStatus
+@@ -245,11 +316,23 @@ ContainmentItem {
+ 
+                 model: activeModel
+ 
++                Loader {
++                    anchors.fill: parent
++                    z: -1
++                    active: root.drawerEnabled
++                    sourceComponent: DrawerDropTarget {
++                        mimeType: root.drawerMimeType
++                        onMoveRequested: root.commitDrawerDrop(root.drawerDragSource, true, "")
++                    }
++                }
++
+                 delegate: ItemLoader {
+                     id: delegate
+ 
+                     width: tasksGrid.cellWidth
+                     height: tasksGrid.cellHeight
++                    trayRoot: root
++                    toPanel: true
+ 
+                     // We need to recalculate the stacking order of the z values due to how keyboard navigation works
+                     // the tab order depends exclusively from this, so we redo it as the position in the list
+@@ -278,7 +361,24 @@ ContainmentItem {
+                 Layout.fillHeight: !vertical
+                 Layout.alignment: vertical ? Qt.AlignVCenter : Qt.AlignHCenter
+                 iconSize: tasksGrid.itemSize
+-                visible: root.hiddenLayout.itemCount > 0
++                visible: root.hiddenLayout.itemCount > 0 || root.drawerEnabled
++
++                Loader {
++                    anchors.fill: parent
++                    active: root.drawerEnabled
++                    sourceComponent: DrawerDropTarget {
++                        mimeType: root.drawerMimeType
++                        onDragAccepted: {
++                            if (root.drawerDragSource) {
++                                systemTrayState.setActiveApplet(null);
++                                systemTrayState.expanded = true;
++                            }
++                        }
++                        onMoveRequested: {
++                            root.commitDrawerDrop(root.drawerDragSource, false, "");
++                        }
++                    }
++                }
+             }
+         }
+ 
+@@ -322,7 +422,7 @@ ContainmentItem {
+                 : PlasmaCore.AppletPopup.AtScreenEdges | PlasmaCore.AppletPopup.AtPanelEdges
+ 
+ 
+-            hideOnWindowDeactivate: !Plasmoid.configuration.pin
++            hideOnWindowDeactivate: !Plasmoid.configuration.pin && !root.drawerDragSource
+             visible: systemTrayState.expanded
+             appletInterface: root
+ 
+diff --git a/applets/systemtray/sortedsystemtraymodel.cpp b/applets/systemtray/sortedsystemtraymodel.cpp
+index d434928..b629e3a 100644
+--- a/applets/systemtray/sortedsystemtraymodel.cpp
++++ b/applets/systemtray/sortedsystemtraymodel.cpp
+@@ -7,6 +7,7 @@
+ #include "sortedsystemtraymodel.h"
+ #include "debug.h"
+ #include "systemtraymodel.h"
++#include "systemtraysettings.h"
+ 
+ #include <QList>
+ 
+@@ -26,6 +27,12 @@ SortedSystemTrayModel::SortedSystemTrayModel(SortingType sorting, QObject *paren
+     sort(0);
+ }
+ 
++void SortedSystemTrayModel::setDrawerSettings(SystemTraySettings *settings)
++{
++    m_drawerSettings = settings;
++    connect(settings, &SystemTraySettings::configurationChanged, this, [this] { invalidate(); });
++}
++
+ bool SortedSystemTrayModel::lessThan(const QModelIndex &left, const QModelIndex &right) const
+ {
+     switch (m_sorting) {
+@@ -52,6 +59,23 @@ bool SortedSystemTrayModel::lessThanSystemTray(const QModelIndex &left, const QM
+ {
+     QVariant itemIdLeft = left.data(static_cast<int>(BaseModel::BaseRole::ItemId));
+     QVariant itemIdRight = right.data(static_cast<int>(BaseModel::BaseRole::ItemId));
++    if (m_drawerSettings && m_drawerSettings->drawerEnabled()) {
++        const auto &placement = m_drawerSettings->drawerPlacement();
++        const auto rank = [&placement](const QVariant &item) {
++            const QString id = item.toString();
++            const auto panel = placement.indexOf(QLatin1Char('+') + id);
++            if (panel >= 0) {
++                return panel;
++            }
++            const auto hidden = placement.indexOf(QLatin1Char('-') + id);
++            return hidden >= 0 ? hidden : placement.indexOf(QLatin1Char('=') + id);
++        };
++        const auto l = rank(itemIdLeft);
++        const auto r = rank(itemIdRight);
++        if (l != r) {
++            return l >= 0 && (r < 0 || l < r);
++        }
++    }
+     if (itemIdRight.toString() == QLatin1String("org.kde.plasma.notifications")) {
+         // return false when at least right is "org.kde.plasma.notifications"
+         return false;
+diff --git a/applets/systemtray/sortedsystemtraymodel.h b/applets/systemtray/sortedsystemtraymodel.h
+index 1cca2c7..b5eb9a0 100644
+--- a/applets/systemtray/sortedsystemtraymodel.h
++++ b/applets/systemtray/sortedsystemtraymodel.h
+@@ -8,6 +8,8 @@
+ 
+ #include <QSortFilterProxyModel>
+ 
++class SystemTraySettings;
++
+ class SortedSystemTrayModel : public QSortFilterProxyModel
+ {
+     Q_OBJECT
+@@ -18,6 +20,7 @@ public:
+     };
+ 
+     explicit SortedSystemTrayModel(SortingType sorting, QObject *parent = nullptr);
++    void setDrawerSettings(SystemTraySettings *settings);
+ 
+ protected:
+     bool lessThan(const QModelIndex &source_left, const QModelIndex &source_right) const override;
+@@ -30,4 +33,5 @@ private:
+     int compareCategoriesOrderly(const QModelIndex &left, const QModelIndex &right) const;
+ 
+     SortingType m_sorting;
++    SystemTraySettings *m_drawerSettings = nullptr;
+ };
+diff --git a/applets/systemtray/systemtray.cpp b/applets/systemtray/systemtray.cpp
+index 4c1db7a..d6e9dbd 100644
+--- a/applets/systemtray/systemtray.cpp
++++ b/applets/systemtray/systemtray.cpp
+@@ -17,7 +17,10 @@
+ #include "systemtraymodel.h"
+ #include "systemtraysettings.h"
+ 
++#include <QDBusConnection>
+ #include <QGuiApplication>
++#include <QSettings>
++#include <QSet>
+ #include <QMenu>
+ #include <QMetaMethod>
+ #include <QMetaObject>
+@@ -26,6 +29,7 @@
+ #include <QQuickWindow>
+ #include <QScreen>
+ #include <QTimer>
++#include <QUuid>
+ #include <qpa/qplatformscreen.h>
+ 
+ #include <Plasma/Applet>
+@@ -40,6 +44,49 @@
+ 
+ using namespace Qt::StringLiterals;
+ 
++namespace {
++class DrawerControl final : public QObject
++{
++    Q_OBJECT
++    Q_CLASSINFO("D-Bus Interface", "org.longweekendlabs.LinuxPowerToys.Drawer")
++
++public:
++    explicit DrawerControl(QObject *parent) : QObject(parent)
++    {
++        QDBusConnection::sessionBus().registerObject(u"/LinuxPowerToysDrawer"_s, this,
++                                                    QDBusConnection::ExportAllSlots);
++    }
++
++public Q_SLOTS:
++    bool Enabled() const { return settings.value(u"drawer/enabled"_s, false).toBool(); }
++
++    bool SetEnabled(bool enabled)
++    {
++        if (enabled != Enabled()) {
++            settings.setValue(u"drawer/enabled"_s, enabled);
++            settings.sync();
++            if (settings.status() != QSettings::NoError) {
++                return false;
++            }
++            Q_EMIT changed(enabled);
++        }
++        return true;
++    }
++
++Q_SIGNALS:
++    void changed(bool enabled);
++
++private:
++    QSettings settings{u"Long Weekend Labs"_s, u"Linux Power Toys"_s};
++};
++
++DrawerControl *drawerControl()
++{
++    static auto *control = new DrawerControl(qGuiApp);
++    return control;
++}
++}
++
+ static void showSystemTrayMenuWayland(QMenu *menu, QQuickItem *trayItem, Plasma::Types::Location location)
+ {
+     QWindow *trayWindow = trayItem->window();
+@@ -153,6 +200,12 @@ void SystemTray::initSettingsAndRegistry()
+ {
+     if (!m_settings) {
+         m_settings = new SystemTraySettings(configScheme(), this);
++        auto *control = drawerControl();
++        m_settings->setDrawerEnabled(control->Enabled());
++        connect(control, &DrawerControl::changed, this, [this](bool enabled) {
++            m_settings->setDrawerEnabled(enabled);
++            Q_EMIT drawerEnabledChanged();
++        });
+         connect(m_settings, &SystemTraySettings::enabledPluginsChanged, this, &SystemTray::onEnabledAppletsChanged);
+     }
+ 
+@@ -394,11 +447,88 @@ SystemTrayModel *SystemTray::systemTrayModel()
+     return m_systemTrayModel;
+ }
+ 
++bool SystemTray::drawerEnabled() const
++{
++    return m_settings && m_settings->drawerEnabled();
++}
++
++QString SystemTray::newDrawerDragToken() const
++{
++    return QUuid::createUuid().toString(QUuid::WithoutBraces);
++}
++
++bool SystemTray::moveDrawerItem(const QString &itemId, bool toPanel, const QString &before)
++{
++    if (!drawerEnabled() || itemId.isEmpty() || itemId == before) {
++        return false;
++    }
++    auto *model = sortedSystemTrayModel();
++    const auto idRole = static_cast<int>(BaseModel::BaseRole::ItemId);
++    const auto statusRole = static_cast<int>(BaseModel::BaseRole::EffectiveStatus);
++    QStringList panel;
++    QStringList hidden;
++    bool found = false;
++    for (int row = 0; row < model->rowCount(); ++row) {
++        const auto index = model->index(row, 0);
++        const QString id = index.data(idRole).toString();
++        const auto status = index.data(statusRole).toInt();
++        if (id.isEmpty() || (status != Plasma::Types::ActiveStatus && status != Plasma::Types::PassiveStatus)) {
++            continue;
++        }
++        if (id == itemId) {
++            if (found) {
++                return false; // The shared placement ID cannot distinguish these items.
++            }
++            found = true;
++            continue;
++        }
++        (status == Plasma::Types::ActiveStatus ? panel : hidden).append(id);
++    }
++    if (!found) {
++        return false;
++    }
++
++    // Keep the automatic visibility of other icons. Store their relative
++    // ordering independently of the explicit overrides made by a drop.
++    QStringList placement;
++    auto &destination = toPanel ? panel : hidden;
++    if (!before.isEmpty() && !destination.contains(before)) {
++        return false;
++    }
++    destination.insert(before.isEmpty() ? destination.size() : destination.indexOf(before), itemId);
++    const auto &previous = m_settings->drawerPlacement();
++    QSet<QString> recorded;
++    const auto append = [&](const QStringList &ids) {
++        for (const auto &id : ids) {
++            if (recorded.contains(id)) {
++                continue;
++            }
++            recorded.insert(id);
++            const auto shown = u'+' + id;
++            const auto drawer = u'-' + id;
++            placement.append(id == itemId ? (toPanel ? shown : drawer)
++                                          : previous.contains(shown) ? shown
++                                          : previous.contains(drawer) ? drawer : u'=' + id);
++        }
++    };
++    append(panel);
++    append(hidden);
++    for (const auto &entry : previous) {
++        if (!entry.isEmpty() && !recorded.contains(entry.mid(1))) {
++            placement.append(entry);
++        }
++    }
++    m_settings->setDrawerPlacement(placement);
++    return true;
++}
++
+ QAbstractItemModel *SystemTray::sortedSystemTrayModel()
+ {
+     if (!m_sortedSystemTrayModel) {
+         m_sortedSystemTrayModel = new SortedSystemTrayModel(SortedSystemTrayModel::SortingType::SystemTray, this);
+-        m_sortedSystemTrayModel->setSourceModel(systemTrayModel());
++        auto *source = systemTrayModel();
++        m_sortedSystemTrayModel->setDrawerSettings(m_settings);
++        m_sortedSystemTrayModel->setSourceModel(source);
+     }
+     return m_sortedSystemTrayModel;
+ }
+diff --git a/applets/systemtray/systemtray.h b/applets/systemtray/systemtray.h
+index 4bc2a90..baf7439 100644
+--- a/applets/systemtray/systemtray.h
++++ b/applets/systemtray/systemtray.h
+@@ -31,6 +31,7 @@ class SystemTray : public Plasma::Containment
+     Q_OBJECT
+     Q_PROPERTY(QAbstractItemModel *systemTrayModel READ sortedSystemTrayModel CONSTANT)
+     Q_PROPERTY(QAbstractItemModel *configSystemTrayModel READ configSystemTrayModel CONSTANT)
++    Q_PROPERTY(bool drawerEnabled READ drawerEnabled NOTIFY drawerEnabledChanged)
+ 
+ public:
+     SystemTray(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
+@@ -44,6 +45,14 @@ public:
+ 
+     QAbstractItemModel *configSystemTrayModel();
+ 
++    bool drawerEnabled() const;
++    Q_INVOKABLE QString newDrawerDragToken() const;
++    Q_INVOKABLE bool moveDrawerItem(const QString &itemId, bool toPanel, const QString &before);
++
++Q_SIGNALS:
++    void drawerEnabledChanged();
++
++public:
+     // Invocable utilities
+     /**
+      * Given an AppletInterface pointer, shows a proper context menu for it
+diff --git a/applets/systemtray/systemtraymodel.cpp b/applets/systemtray/systemtraymodel.cpp
+index 1c116e4..4a07d10 100644
+--- a/applets/systemtray/systemtraymodel.cpp
++++ b/applets/systemtray/systemtraymodel.cpp
+@@ -80,6 +80,17 @@ Plasma::Types::ItemStatus BaseModel::calculateEffectiveStatus(bool canRender, Pl
+     bool forcedHidden = m_hiddenItems.contains(itemId);
+     bool isDisabledSni = m_settings && m_settings->isDisabledStatusNotifier(itemId);
+ 
++    if (m_settings && m_settings->drawerEnabled()
++        && status != Plasma::Types::ItemStatus::HiddenStatus && !isDisabledSni) {
++        const auto &placement = m_settings->drawerPlacement();
++        if (placement.contains(u'+' + itemId)) {
++            return Plasma::Types::ItemStatus::ActiveStatus;
++        }
++        if (placement.contains(u'-' + itemId)) {
++            return Plasma::Types::ItemStatus::PassiveStatus;
++        }
++    }
++
+     if (!forcedShown && (status == Plasma::Types::ItemStatus::HiddenStatus || isDisabledSni)) {
+         return Plasma::Types::ItemStatus::HiddenStatus;
+     } else if (forcedShown || (!forcedHidden && status != Plasma::Types::ItemStatus::PassiveStatus)) {
+diff --git a/applets/systemtray/systemtraysettings.cpp b/applets/systemtray/systemtraysettings.cpp
+index 059853a..732d4ed 100644
+--- a/applets/systemtray/systemtraysettings.cpp
++++ b/applets/systemtray/systemtraysettings.cpp
+@@ -96,6 +96,32 @@ const QStringList SystemTraySettings::hiddenItems() const
+     return config->property(HIDDEN_ITEMS_KEY).toStringList();
+ }
+ 
++bool SystemTraySettings::drawerEnabled() const
++{
++    return m_drawerEnabled;
++}
++
++void SystemTraySettings::setDrawerEnabled(bool enabled)
++{
++    if (m_drawerEnabled != enabled) {
++        m_drawerEnabled = enabled;
++        Q_EMIT configurationChanged();
++    }
++}
++
++const QStringList &SystemTraySettings::drawerPlacement() const
++{
++    return m_drawerPlacement;
++}
++
++void SystemTraySettings::setDrawerPlacement(const QStringList &placement)
++{
++    if (m_drawerPlacement != placement) {
++        m_drawerPlacement = placement;
++        writeConfigValue(QStringLiteral("linuxPowerToysPlacement"), placement);
++    }
++}
++
+ void SystemTraySettings::cleanupPlugin(const QString &pluginId)
+ {
+     removeKnownPlugin(pluginId);
+@@ -117,6 +143,7 @@ void SystemTraySettings::loadConfig()
+     }
+     config->load();
+ 
++    m_drawerPlacement = config->property("linuxPowerToysPlacement").toStringList();
+     m_knownItems = config->property(KNOWN_ITEMS_KEY).toStringList();
+ 
+     QStringList extraItems = config->property(EXTRA_ITEMS_KEY).toStringList();
+diff --git a/applets/systemtray/systemtraysettings.h b/applets/systemtray/systemtraysettings.h
+index d16782d..be87c98 100644
+--- a/applets/systemtray/systemtraysettings.h
++++ b/applets/systemtray/systemtraysettings.h
+@@ -37,6 +37,11 @@ public:
+     const QStringList shownItems() const;
+     const QStringList hiddenItems() const;
+ 
++    bool drawerEnabled() const;
++    void setDrawerEnabled(bool enabled);
++    const QStringList &drawerPlacement() const;
++    void setDrawerPlacement(const QStringList &placement);
++
+     void cleanupPlugin(const QString &pluginId);
+ 
+ Q_SIGNALS:
+@@ -50,6 +55,8 @@ private:
+ 
+     QPointer<KConfigLoader> config;
+ 
++    QStringList m_drawerPlacement;
++    bool m_drawerEnabled = false;
+     bool updatingConfigValue = false;
+     QStringList m_extraItems;
+     QStringList m_knownItems;
