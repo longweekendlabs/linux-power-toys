@@ -322,6 +322,12 @@ protected:
     }
 };
 
+class SettingsLink final : public QPushButton {
+public:
+    QSize sizeHint() const override { return layout() ? layout()->sizeHint() : QPushButton::sizeHint(); }
+    QSize minimumSizeHint() const override { return layout() ? layout()->minimumSize() : QPushButton::minimumSizeHint(); }
+};
+
 class SettingsWindow final : public QWidget {
     Q_OBJECT
 
@@ -422,7 +428,9 @@ public:
             QLabel#muted { color: #b3bfce; font-size: 12px; }
             QFrame#row { background: #202731; border: 1px solid #323d49; border-radius: 7px; }
             QFrame#row QLabel, QFrame#row QCheckBox { background: transparent; }
-            QPushButton#detail { font-size: 19px; background: transparent; border: 0; padding: 4px 8px; }
+            QPushButton#detail { background: transparent; border: 0; border-radius: 4px; }
+            QPushButton#detail:hover { background: #29333e; }
+            QLabel#chevron { font-size: 19px; }
             QCheckBox::indicator { width: 36px; height: 20px; }
             QComboBox, QDateTimeEdit { min-height: 28px; padding-left: 7px; background: #25303c;
                                        border: 1px solid #536476; border-radius: 4px; }
@@ -522,15 +530,19 @@ private:
         frame->setMinimumHeight(65);
         auto *layout = new QHBoxLayout(frame);
         layout->setContentsMargins(14, 8, 14, 8);
+        auto *contents = new QHBoxLayout;
+        contents->setContentsMargins(0, 0, 0, 0);
         if (detail > 0) {
             const QIcon glyph = detail == 1 ? QIcon(u":/awake/awake-32.png"_s) : QIcon::fromTheme(u"view-grid"_s);
             auto *label = new QLabel;
             label->setPixmap(glyph.pixmap(26, 26));
-            layout->addWidget(label);
+            label->setAttribute(Qt::WA_TransparentForMouseEvents);
+            contents->addWidget(label);
         }
         auto *copy = new QVBoxLayout;
         copy->setSpacing(3);
         auto *name = new QLabel(title);
+        name->setAttribute(Qt::WA_TransparentForMouseEvents);
         auto font = name->font();
         font.setWeight(QFont::DemiBold);
         name->setFont(font);
@@ -538,18 +550,28 @@ private:
         if (!description.isEmpty()) {
             auto *note = new QLabel(description);
             note->setObjectName(u"muted"_s);
+            note->setAttribute(Qt::WA_TransparentForMouseEvents);
             note->setWordWrap(true);
             copy->addWidget(note);
         }
-        layout->addLayout(copy, 1);
-        layout->addWidget(control);
+        contents->addLayout(copy, 1);
         if (detail > 0) {
-            auto *button = new QPushButton(u"›"_s);
+            auto *button = new SettingsLink;
             button->setObjectName(u"detail"_s);
+            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
             button->setAccessibleName(tr("Open %1 settings").arg(title));
+            button->setCursor(Qt::PointingHandCursor);
+            auto *chevron = new QLabel(u"›"_s);
+            chevron->setObjectName(u"chevron"_s);
+            chevron->setAttribute(Qt::WA_TransparentForMouseEvents);
+            contents->addWidget(chevron);
+            button->setLayout(contents);
             connect(button, &QPushButton::clicked, this, [this, detail] { openPage(detail); });
-            layout->addWidget(button);
+            layout->addWidget(button, 1);
+        } else {
+            layout->addLayout(contents, 1);
         }
+        layout->addWidget(control);
         list->addWidget(frame);
         return frame;
     }
@@ -615,7 +637,7 @@ private:
         });
     }
 
-    void showSettings(const QString &activationToken)
+    void showSettings(const QString &activationToken, int page = -1)
     {
         if (!window) {
             window = new SettingsWindow;
@@ -634,6 +656,9 @@ private:
         }
         refreshDrawer();
         sync();
+        if (page >= 0) {
+            window->openPage(page);
+        }
         window->showNormal();
         window->raise();
         if (activationToken.isEmpty()) {
@@ -748,8 +773,7 @@ private:
         }
         untilAction = menu->addAction(tr("Keep awake until…"));
         connect(untilAction, &QAction::triggered, this, [this] {
-            ShowSettings();
-            window->openPage(1);
+            showSettings(awakeTray->providedToken(), 1);
             bool accepted = false;
             const auto end = chooseEndTime(&accepted);
             if (accepted) {
@@ -763,10 +787,8 @@ private:
         screenAction->setCheckable(true);
         connect(screenAction, &QAction::triggered, this, &Toolbox::setScreen);
         menu->addSeparator();
-        connect(menu->addAction(tr("Open settings")), &QAction::triggered, this, [this] {
-            ShowSettings();
-            window->openPage(1);
-        });
+        const auto openAwakeSettings = [this] { showSettings(awakeTray->providedToken(), 1); };
+        connect(menu->addAction(tr("Open settings")), &QAction::triggered, this, openAwakeSettings);
         connect(menu->addAction(tr("Exit")), &QAction::triggered, this, [this] {
             enableAwake(false);
         }, Qt::QueuedConnection);
@@ -774,7 +796,7 @@ private:
             action->setCheckable(true);
         }
         awakeTray->setContextMenu(menu);
-        awakeTray->setIsMenu(true);
+        connect(awakeTray.get(), &KStatusNotifierItem::activateRequested, this, openAwakeSettings);
     }
 
     QDateTime chooseEndTime(bool *accepted)
