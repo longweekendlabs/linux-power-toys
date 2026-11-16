@@ -1,0 +1,258 @@
+#!/usr/bin/python3 -IB
+"""Linux Power Toys's Linux power selector and optional Intel/Dell overrides.
+
+Stock profiles go through the system power service. The installed helper
+takes administrator authorization only for Linux Power Toys's hardware overrides and
+for clearing those overrides when returning to a stock profile.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from permissions import authorized_session
+
+MODE_NAMES = {
+    "power-saver": "Power Saver",
+    "cool": "Cool",
+    "balanced": "Balanced",
+    "performance": "Performance",
+    "gaming": "Gaming",
+}
+SYSTEM_PROFILES = ("power-saver", "balanced", "performance")
+CUSTOM_PRESETS = {
+    "cool": ("balanced", "1", "cool", "balance_performance"),
+    "gaming": ("performance", "0", "performance", "performance"),
+}
+TURBO = Path("/sys/devices/system/cpu/intel_pstate/no_turbo")
+CPU_POLICIES = Path("/sys/devices/system/cpu/cpufreq")
+PLATFORM = Path("/sys/class/platform-profile")
+STATE = Path("/run/linux-power-toys-power-state.json")
+LOCK = Path("/run/linux-power-toys-power-presets.lock")
+PPD = "/usr/bin/powerprofilesctl"
+TOPIVO_STATE = Path("/run/topivo-power-state.json")
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ""
+
+
+def _ctl(*args: str) -> str:
+    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+    try:
+        return subprocess.run([PPD, *args], capture_output=True, text=True,
+                              check=True, timeout=6, env=env).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        verb = "change the system power profile" if args[0] == "set" else "read the system power profiles"
+        raise OSError(f"Could not {verb}.") from e
+
+
+def _firmware() -> Path | None:
+    return next((path for path in PLATFORM.glob("*") if _read(path / "name") == "dell-pc"), None)
+
+
+def _saved_state() -> dict:
+    try:
+        data = json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+    name = data.get("mode") if isinstance(data, dict) else None
+    if not isinstance(name, str) or name not in CUSTOM_PRESETS:
+        return {}
+    raw = data.get("overrides")
+    if not isinstance(raw, dict):
+        return {}
+    overrides = {}
+    for key in ("turbo", "thermal"):
+        values = raw.get(key)
+        if (isinstance(values, list) and len(values) == 2
+                and all(isinstance(value, str) for value in values)):
+            overrides[key] = values
+    return {"mode": name, "overrides": overrides}
+
+
+def _save_state(state: dict) -> None:
+    if not state:
+        STATE.unlink(missing_ok=True)
+        return
+    with tempfile.NamedTemporaryFile(mode="w", dir=STATE.parent, prefix=".linux-power-toys-power-",
+                                     encoding="utf-8", delete=False) as file:
+        temporary = Path(file.name)
+        try:
+            json.dump(state, file)
+            file.close()
+            temporary.chmod(0o644)
+            temporary.replace(STATE)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _confirmed_mode(status: dict, saved: dict) -> str:
+    name = saved.get("mode")
+    if name in CUSTOM_PRESETS and name in status["available"]:
+        profile, turbo, thermal, epp = CUSTOM_PRESETS[name]
+        if ((status["profile"], status["turbo"], status["cpu"]) == (profile, turbo, epp)
+                and status["thermal"] in ("", thermal)):
+            return name
+    profile = status["profile"]
+    return profile if profile in SYSTEM_PROFILES else ""
+
+
+def describe() -> dict:
+    firmware = _firmware()
+    choices = _read(firmware / "choices").split() if firmware else []
+    thermal = _read(firmware / "profile") if firmware else ""
+    epp = {_read(path) for path in CPU_POLICIES.glob("policy*/energy_performance_preference")}
+    cpu = ", ".join(sorted(epp - {""}))
+    turbo = _read(TURBO)
+    try:
+        profile = _ctl("get")
+        supported = set(re.findall(r"^[ \t*]*(power-saver|balanced|performance):[ \t]*$",
+                                   _ctl("list"), flags=re.MULTILINE))
+    except OSError:
+        profile, supported = "", set()
+    available = supported.copy() if profile in SYSTEM_PROFILES else set()
+    for mode, (target, _turbo, target_thermal, _epp) in CUSTOM_PRESETS.items():
+        if (target in available and turbo in {"0", "1"} and cpu
+                and firmware and {thermal, target_thermal} <= set(choices)):
+            available.add(mode)
+    status = {
+        "profile": profile,
+        "cpu": cpu,
+        "turbo": turbo,
+        "thermal": thermal,
+        "available": [mode for mode in MODE_NAMES if mode in available],
+    }
+    saved = _saved_state()
+    status["mode"] = _confirmed_mode(status, saved)
+    status["managed"] = bool(saved)
+    return status
+
+
+def _write(path: Path, value: str) -> None:
+    path.write_text(value + "\n")
+    if _read(path) != value:
+        raise OSError(f"Could not verify {path.name}.")
+
+
+def _managed_fields(saved: dict, before: dict, paths: dict, choices: dict) -> dict:
+    return {
+        field: original
+        for field, (original, applied) in saved.get("overrides", {}).items()
+        if field in paths and original in choices[field] and before[field] == applied
+    }
+
+
+def apply(mode: str) -> dict:
+    if mode not in MODE_NAMES:
+        raise ValueError("Unknown power mode.")
+    if TOPIVO_STATE.exists():
+        raise OSError("Return Topivo to a standard profile before switching power modes here.")
+    before = describe()
+    if mode not in before["available"]:
+        raise OSError("This power mode is unavailable on the computer.")
+    saved = _saved_state()
+    custom = mode in CUSTOM_PRESETS
+    privileged = os.geteuid() == 0
+    if (saved or custom) and not privileged:
+        raise OSError("Use Linux Power Toys's administrator prompt to change hardware settings.")
+
+    firmware = _firmware()
+    paths = {"turbo": TURBO}
+    choices = {"turbo": {"0", "1"}}
+    if firmware:
+        paths["thermal"] = firmware / "profile"
+        choices["thermal"] = set(_read(firmware / "choices").split())
+    original = _managed_fields(saved, before, paths, choices)
+    profile, turbo, thermal, epp = CUSTOM_PRESETS[mode] if custom else (mode, "", "", "")
+    target = {"turbo": turbo, **({"thermal": thermal} if firmware else {})} if custom else original
+    if custom and any(before[field] not in choices[field] for field in target):
+        raise OSError("Could not read the current hardware settings.")
+
+    written = []
+    profile_requested = False
+    try:
+        # Release Linux Power Toys's settings before handing the hardware back to the OS.
+        if not custom:
+            for field, value in target.items():
+                written.append(field)
+                _write(paths[field], value)
+        if before["profile"] != profile:
+            profile_requested = True
+            _ctl("set", profile)
+        if custom:
+            for field, value in target.items():
+                if _read(paths[field]) != value:
+                    written.append(field)
+                    _write(paths[field], value)
+        after = describe()
+        if after["profile"] != profile:
+            raise OSError("The system did not confirm the requested power profile.")
+        if custom and (after["cpu"] != epp or any(after[field] != value for field, value in target.items())):
+            raise OSError("The CPU, Turbo Boost or Dell thermal readback did not match the preset.")
+
+        overrides = {field: [original.get(field, before[field]), value] for field, value in target.items()
+                     if original.get(field, before[field]) != value}
+        next_state = {"mode": mode, "overrides": overrides} if custom else {}
+        if saved or custom:
+            _save_state(next_state)
+        after["mode"] = _confirmed_mode(after, next_state)
+        after["managed"] = bool(next_state)
+        return after
+    except OSError as e:
+        failures = []
+        if profile_requested:
+            try:
+                _ctl("set", before["profile"])
+                if _ctl("get") != before["profile"]:
+                    raise OSError("Could not restore the previous system power profile.")
+            except OSError as rollback_error:
+                failures.append(str(rollback_error))
+        restore = target if custom and profile_requested else written
+        for field in reversed(restore):
+            try:
+                if _read(paths[field]) != before[field]:
+                    _write(paths[field], before[field])
+            except OSError as rollback_error:
+                failures.append(str(rollback_error))
+        if failures:
+            raise OSError(f"{e} Rollback also failed: {'; '.join(failures)}") from e
+        raise
+
+
+def main(args: list[str]) -> int:
+    if args == ["status"]:
+        print(json.dumps(describe()))
+        return 0
+    if len(args) != 2 or args[0] != "apply" or args[1] not in MODE_NAMES:
+        print("Expected status or a supported power mode.", file=sys.stderr)
+        return 2
+
+    try:
+        if os.geteuid() != 0:
+            print(json.dumps(apply(args[1])))
+            return 0
+        authorized_session()
+        import fcntl
+
+        fd = os.open(LOCK, os.O_NOFOLLOW | os.O_CLOEXEC | os.O_CREAT | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            print(json.dumps(apply(args[1])))
+    except (KeyError, OSError, ValueError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

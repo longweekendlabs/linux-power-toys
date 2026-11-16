@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD polkit Policy Configuration 1.0//EN" "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+  <vendor>Long Weekend Labs</vendor>
+  <action id="org.longweekendlabs.LinuxPowerToys.authorize">
+    <description>Set up Linux Power Toys system access for this account</description>
+    <message>Administrator approval is required to enable Dell power presets and built-in touchpad edge gestures for this account.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@LPT_HELPERS@/access</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">authorize</annotate>
+  </action>
+  <action id="org.longweekendlabs.LinuxPowerToys.power">
+    <description>Apply a Linux Power Toys power preset</description>
+    <message>System access is required to apply this power preset.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@LPT_HELPERS@/power</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">apply</annotate>
+  </action>
+  <action id="org.longweekendlabs.LinuxPowerToys.touchpad">
+    <description>Enable Linux Power Toys touchpad edge gestures</description>
+    <message>System access is required to use touchpad edge gestures.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@LPT_HELPERS@/touchpad</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">start</annotate>
+  </action>
+</policyconfig>

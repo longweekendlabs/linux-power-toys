@@ -1,6 +1,9 @@
+#include "controls.h"
+
 #include <KStatusNotifierItem>
 #include <KWindowSystem>
 
+#include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -22,6 +25,7 @@
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -29,6 +33,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 
 using namespace Qt::StringLiterals;
 
@@ -45,6 +50,12 @@ constexpr uint displayPolicy = 4;
 constexpr uint activeInhibition = 1;
 constexpr std::array minutes{15, 30, 60, 120};
 enum class Mode { Passive, Timed, Until, Indefinite };
+enum Page { Home, AwakePage, PowerPage, EdgesPage, CleanerPage, DrawerPage, PageCount };
+
+QIcon powerIcon()
+{
+    return QIcon::fromTheme(u"battery-profile-performance"_s, QIcon::fromTheme(u"battery"_s));
+}
 
 QIcon toolboxIcon()
 {
@@ -336,8 +347,8 @@ public:
     {
         setWindowTitle(tr("Linux Power Toys"));
         setWindowIcon(toolboxIcon());
-        resize(976, 560);
-        setMinimumSize(560, 470);
+        resize(976, 645);
+        setMinimumSize(822, 580);
         auto *layout = new QHBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
@@ -347,9 +358,11 @@ public:
         auto *nav = new QVBoxLayout(sidebar);
         nav->setContentsMargins(10, 12, 10, 12);
         nav->setSpacing(4);
-        const std::array names{tr("Home"), tr("Always Awake"), tr("Tray Icon Drawer")};
-        const std::array icons{QIcon::fromTheme(u"go-home"_s), QIcon(u":/awake/awake-32.png"_s),
-                              QIcon::fromTheme(u"view-grid"_s)};
+        const std::array names{tr("Home"), tr("Always Awake"), tr("Power"), tr("Touchpad Edges"),
+                               tr("Cleaner"), tr("Tray Icon Drawer")};
+        icons = {QIcon::fromTheme(u"go-home"_s), QIcon(u":/awake/awake-32.png"_s), powerIcon(),
+                 QIcon::fromTheme(u"input-touchpad"_s), QIcon::fromTheme(u"edit-clear"_s),
+                 QIcon::fromTheme(u"view-grid"_s)};
         for (int index = 0; index < int(names.size()); ++index) {
             auto *button = new QPushButton(icons[index], names[index]);
             button->setCheckable(true);
@@ -365,11 +378,19 @@ public:
         auto *home = page(names[0], {}, tr("Utilities"));
         alwaysHome = new Toggle;
         alwaysHome->setAccessibleName(tr("Enable Always Awake"));
-        row(home, names[1], tr("Keep your computer awake from the system tray."), alwaysHome, 1);
+        row(home, names[1], tr("Keep your computer awake from the system tray."), alwaysHome, AwakePage);
+        powerHome->setAccessibleName(tr("Enable Power"));
+        row(home, names[PowerPage], tr("Switch power profiles from the tray."), powerHome, PowerPage);
+        edgesHome->setAccessibleName(tr("Enable Touchpad Edges"));
+        row(home, names[EdgesPage], tr("Slide along the touchpad edges for brightness and volume."), edgesHome, EdgesPage);
+        row(home, names[CleanerPage], tr("Preview and reclaim disk space."), new QLabel(tr("In development")), CleanerPage);
         drawerHome = new Toggle;
         drawerHome->setEnabled(false);
         drawerHome->setAccessibleName(tr("Enable Tray Icon Drawer"));
-        row(home, names[2], tr("Drag icons between the panel and the drawer."), drawerHome, 2);
+        row(home, names[DrawerPage], tr("Drag icons between the panel and the drawer."), drawerHome, DrawerPage);
+        home->addSpacing(8);
+        launchAtLogin->setAccessibleName(tr("Start at login"));
+        row(home, tr("Start at login"), tr("Launch silently when you sign in to KDE."), launchAtLogin);
         home->addStretch();
 
         auto *awake = page(names[1], tr("Keep your computer awake from the system tray."), tr("Settings"));
@@ -393,7 +414,44 @@ public:
         awake->addWidget(message);
         awake->addStretch();
 
-        auto *drawer = page(names[2], tr("Organize icons directly in the Plasma system tray."), tr("Settings"));
+        auto *power = page(names[PowerPage], tr("Switch power profiles from Settings or the system tray."), tr("Settings"));
+        powerPage->setAccessibleName(tr("Enable Power"));
+        row(power, tr("Enable Power"), tr("Show power profiles in the system tray."), powerPage);
+        auto *profileGroup = new QActionGroup(this);
+        profileGroup->setExclusionPolicy(QActionGroup::ExclusionPolicy::Exclusive);
+        auto *profileButtons = new QHBoxLayout;
+        for (const auto &id : PowerProfiles::modes()) {
+            auto *action = profileGroup->addAction(PowerProfiles::label(id));
+            action->setCheckable(true);
+            auto *button = new QToolButton;
+            button->setDefaultAction(action);
+            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            profileButtons->addWidget(button);
+            profileActions.insert(id, action);
+            connect(action, &QAction::triggered, this, [this, id] { emit profileSelected(id); });
+        }
+        power->addLayout(profileButtons);
+        powerDetails->setWordWrap(true);
+        power->addWidget(powerDetails);
+        powerMessage->setWordWrap(true);
+        power->addWidget(powerMessage);
+        row(power, tr("System access"), tr("One-time approval for Dell presets and Touchpad Edges."), powerAccess);
+        power->addStretch();
+
+        auto *edges = page(names[EdgesPage], tr("Adjust brightness and volume from the built-in touchpad."), tr("Settings"));
+        edgesPage->setAccessibleName(tr("Enable Touchpad Edges"));
+        row(edges, tr("Enable Touchpad Edges"), tr("Use the physical edges of the touchpad."), edgesPage);
+        row(edges, tr("Left edge"), tr("Slide up or down to change screen brightness."), new QLabel);
+        row(edges, tr("Right edge"), tr("Slide up or down to change audio volume."), new QLabel);
+        edgesMessage->setWordWrap(true);
+        edges->addWidget(edgesMessage);
+        row(edges, tr("System access"), tr("One-time approval for Touchpad Edges and Dell presets."), edgesAccess);
+        edges->addStretch();
+
+        auto *cleaner = page(names[CleanerPage], tr("Preview files before reclaiming disk space."), tr("In development"));
+        cleaner->addStretch();
+
+        auto *drawer = page(names[DrawerPage], tr("Organize icons directly in the Plasma system tray."), tr("Settings"));
         drawerPage = new Toggle;
         drawerPage->setEnabled(false);
         drawerPage->setAccessibleName(tr("Enable Tray Icon Drawer"));
@@ -408,6 +466,16 @@ public:
         }
         for (auto *toggle : {drawerHome, drawerPage}) {
             connect(toggle, &QCheckBox::toggled, this, &SettingsWindow::enableDrawer);
+        }
+        for (auto *toggle : {powerHome, powerPage}) {
+            connect(toggle, &QCheckBox::toggled, this, &SettingsWindow::enablePower);
+        }
+        for (auto *toggle : {edgesHome, edgesPage}) {
+            connect(toggle, &QCheckBox::toggled, this, &SettingsWindow::enableEdges);
+        }
+        connect(launchAtLogin, &QCheckBox::toggled, this, &SettingsWindow::setStartup);
+        for (auto *button : {powerAccess, edgesAccess}) {
+            connect(button, &QPushButton::clicked, this, &SettingsWindow::authorize);
         }
         connect(mode, &QComboBox::activated, this, [this] { emitMode(); });
         connect(duration, &QComboBox::activated, this, [this] { emitMode(); });
@@ -434,6 +502,9 @@ public:
             QCheckBox::indicator { width: 36px; height: 20px; }
             QComboBox, QDateTimeEdit { min-height: 28px; padding-left: 7px; background: #25303c;
                                        border: 1px solid #536476; border-radius: 4px; }
+            QToolButton { padding: 7px 10px; border: 1px solid #536476; border-radius: 5px; }
+            QToolButton:checked { border-color: #79e2ec; color: #79e2ec; background: #293a45; }
+            QToolButton:disabled { color: #8996a3; border-color: #313d48; }
             QPushButton:focus, QCheckBox:focus { outline: 2px solid #79e2ec; }
         )"_s);
         openPage(0);
@@ -476,12 +547,49 @@ public:
         drawerMessage->setText(enabled ? QString{} : tr("The Plasma drawer integration is unavailable."));
     }
 
+    void syncControls(const PowerProfiles *power, const TouchpadEdges *edges, const SystemAccess &access, bool startup)
+    {
+        const QSignalBlocker a(powerHome), b(powerPage), c(edgesHome), d(edgesPage), e(launchAtLogin);
+        launchAtLogin->setChecked(startup);
+        for (auto *toggle : {powerHome, powerPage}) {
+            toggle->setChecked(power != nullptr);
+            toggle->setEnabled(!power || !power->applying());
+        }
+        const auto unavailable = TouchpadEdges::unavailableReason();
+        for (auto *toggle : {edgesHome, edgesPage}) {
+            toggle->setChecked(edges != nullptr);
+            toggle->setEnabled(edges || unavailable.isEmpty());
+        }
+        const auto available = power ? power->available() : QStringList{};
+        const bool allowed = SystemAccess::authorized();
+        for (auto it = profileActions.cbegin(); it != profileActions.cend(); ++it) {
+            it.value()->setChecked(power && power->current() == it.key());
+            it.value()->setEnabled(power && !power->busy() && available.contains(it.key())
+                                   && (!power->needsAccess(it.key()) || allowed));
+        }
+        powerDetails->setText(power ? power->details() : tr("Power is off."));
+        powerMessage->setText(power && !power->error().isEmpty() ? power->error() : access.error());
+        const auto edgeState = edges ? (edges->active() ? tr("Touchpad Edges is active.")
+                                     : edges->running() ? tr("Starting Touchpad Edges…") : edges->error())
+                                     : unavailable;
+        edgesMessage->setText(!edgeState.isEmpty() ? edgeState : access.error());
+        for (auto *button : {powerAccess, edgesAccess}) {
+            button->setEnabled(SystemAccess::installed() && !allowed && !access.busy());
+            button->setText(allowed ? tr("Approved") : access.busy() ? tr("Waiting…") : tr("Set up"));
+        }
+    }
+
     void setMessage(const QString &text) { message->setText(text); }
     QDateTime selectedEnd() const { return until->dateTime(); }
 
 signals:
     void enableAwake(bool enabled);
     void enableDrawer(bool enabled);
+    void enablePower(bool enabled);
+    void enableEdges(bool enabled);
+    void setStartup(bool enabled);
+    void authorize();
+    void profileSelected(const QString &profile);
     void modeChanged(Mode mode, QDateTime end, int minutes);
     void screenChanged(bool enabled);
 
@@ -533,7 +641,7 @@ private:
         auto *contents = new QHBoxLayout;
         contents->setContentsMargins(0, 0, 0, 0);
         if (detail > 0) {
-            const QIcon glyph = detail == 1 ? QIcon(u":/awake/awake-32.png"_s) : QIcon::fromTheme(u"view-grid"_s);
+            const QIcon &glyph = icons[detail];
             auto *label = new QLabel;
             label->setPixmap(glyph.pixmap(26, 26));
             label->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -577,7 +685,19 @@ private:
     }
 
     QStackedWidget *pages = new QStackedWidget;
-    std::array<QPushButton *, 3> navButtons{};
+    std::array<QPushButton *, PageCount> navButtons{};
+    std::array<QIcon, PageCount> icons{};
+    QCheckBox *powerHome = new Toggle;
+    QCheckBox *powerPage = new Toggle;
+    QCheckBox *edgesHome = new Toggle;
+    QCheckBox *edgesPage = new Toggle;
+    QCheckBox *launchAtLogin = new Toggle;
+    QLabel *powerDetails = new QLabel;
+    QLabel *powerMessage = new QLabel;
+    QLabel *edgesMessage = new QLabel;
+    QPushButton *powerAccess = new QPushButton;
+    QPushButton *edgesAccess = new QPushButton;
+    QHash<QString, QAction *> profileActions;
     QCheckBox *alwaysHome{};
     QCheckBox *alwaysPage{};
     QCheckBox *drawerHome{};
@@ -605,10 +725,17 @@ public:
         if (settings.value(u"awake/enabled"_s, false).toBool()) {
             enableAwake(true);
         }
+        connect(&access, &SystemAccess::changed, this, &Toolbox::sync);
+        if (settings.value(u"power/enabled"_s, true).toBool()) {
+            setPower(true);
+        }
+        if (settings.value(u"edges/enabled"_s, false).toBool()) {
+            setEdges(true);
+        }
         updateToolboxTray();
     }
 
-    bool needsTray() const { return awake || drawerEnabled.value_or(false); }
+    bool needsTray() const { return awake || power || edges || drawerEnabled.value_or(false); }
 
     void finishBackgroundStartup()
     {
@@ -650,12 +777,21 @@ private:
             });
             connect(window, &SettingsWindow::enableAwake, this, &Toolbox::enableAwake);
             connect(window, &SettingsWindow::enableDrawer, this, &Toolbox::setDrawer);
+            connect(window, &SettingsWindow::enablePower, this, &Toolbox::setPower);
+            connect(window, &SettingsWindow::enableEdges, this, &Toolbox::setEdges);
+            connect(window, &SettingsWindow::profileSelected, this, &Toolbox::selectProfile);
+            connect(window, &SettingsWindow::authorize, &access, &SystemAccess::authorize);
+            connect(window, &SettingsWindow::setStartup, this, [this](bool enabled) {
+                settings.setValue(u"startup/enabled"_s, enabled);
+                settings.sync();
+            });
             connect(window, &SettingsWindow::modeChanged, this, &Toolbox::setMode);
             connect(window, &SettingsWindow::screenChanged, this, &Toolbox::setScreen);
             sync();
         }
         refreshDrawer();
         sync();
+        if (power && !power->busy()) power->refresh();
         if (page >= 0) {
             window->openPage(page);
         }
@@ -692,6 +828,96 @@ private:
         sync();
     }
 
+    void setPower(bool enabled)
+    {
+        if (enabled == bool(power)) return;
+        if (!enabled && power->applying()) {
+            sync();
+            return;
+        }
+        if (!enabled && power->managed()) {
+            if (power->busy() || !SystemAccess::authorized() || power->systemProfile().isEmpty()) {
+                showSettings({}, PowerPage);
+                sync();
+                return;
+            }
+            disablePowerAfterApply = true;
+            power->select(power->systemProfile());
+            return;
+        }
+        settings.setValue(u"power/enabled"_s, enabled);
+        settings.sync();
+        if (enabled) {
+            power = std::make_unique<PowerProfiles>();
+            powerTray = makeTray(u"linux-power-toys-power"_s, tr("Power Profiles"), powerIcon());
+            auto *menu = new QMenu;
+            auto *group = new QActionGroup(menu);
+            group->setExclusionPolicy(QActionGroup::ExclusionPolicy::Exclusive);
+            for (const auto &id : PowerProfiles::modes()) {
+                auto *action = group->addAction(PowerProfiles::label(id));
+                action->setCheckable(true);
+                menu->addAction(action);
+                powerTrayActions.insert(id, action);
+                connect(action, &QAction::triggered, this, [this, id] { selectProfile(id); });
+            }
+            menu->addSeparator();
+            const auto openPower = [this] { showSettings(powerTray->providedToken(), PowerPage); };
+            connect(menu->addAction(tr("Open settings")), &QAction::triggered, this, openPower);
+            powerTray->setContextMenu(menu);
+            connect(powerTray.get(), &KStatusNotifierItem::activateRequested, this, openPower);
+            connect(power.get(), &PowerProfiles::changed, this, &Toolbox::sync);
+            connect(power.get(), &PowerProfiles::applied, this, [this](bool success) {
+                if (!std::exchange(disablePowerAfterApply, false)) return;
+                if (success) setPower(false);
+            }, Qt::QueuedConnection);
+            power->refresh();
+        } else {
+            powerTrayActions.clear();
+            powerTray.reset();
+            power.reset();
+        }
+        updateToolboxTray();
+        sync();
+        quitIfIdle();
+    }
+
+    void selectProfile(const QString &id)
+    {
+        if (!power) return;
+        if (power->needsAccess(id) && !SystemAccess::authorized()) {
+            showSettings({}, PowerPage);
+            return;
+        }
+        power->select(id);
+    }
+
+    void setEdges(bool enabled)
+    {
+        if (enabled == bool(edges)) return;
+        if (enabled && (!SystemAccess::authorized() || !TouchpadEdges::unavailableReason().isEmpty())) {
+            if (window) window->openPage(EdgesPage);
+            sync();
+            return;
+        }
+        settings.setValue(u"edges/enabled"_s, enabled);
+        settings.sync();
+        if (enabled) {
+            edges = std::make_unique<TouchpadEdges>();
+            connect(edges.get(), &TouchpadEdges::changed, this, &Toolbox::sync);
+            edges->start();
+        } else {
+            edges.reset();
+        }
+        updateToolboxTray();
+        sync();
+        quitIfIdle();
+    }
+
+    void quitIfIdle()
+    {
+        if (!window && !needsTray()) QCoreApplication::quit();
+    }
+
     void refreshDrawer()
     {
         auto call = QDBusMessage::createMethodCall(drawerService, drawerPath, drawerInterface, u"Enabled"_s);
@@ -723,6 +949,8 @@ private:
             toolboxTray.reset();
             toolboxAwake = nullptr;
             toolboxDrawer = nullptr;
+            toolboxPower = nullptr;
+            toolboxEdges = nullptr;
             return;
         }
         if (!toolboxTray) {
@@ -730,11 +958,20 @@ private:
             auto *menu = new QMenu;
             toolboxAwake = menu->addAction(tr("Always Awake"));
             toolboxAwake->setCheckable(true);
+            toolboxPower = menu->addAction(tr("Power"));
+            toolboxPower->setCheckable(true);
+            toolboxEdges = menu->addAction(tr("Touchpad Edges"));
+            toolboxEdges->setCheckable(true);
             toolboxDrawer = menu->addAction(tr("Tray Icon Drawer"));
             toolboxDrawer->setCheckable(true);
             // Disabling the last toy destroys the menu that owns the action.
             connect(toolboxAwake, &QAction::triggered, this, &Toolbox::enableAwake, Qt::QueuedConnection);
             connect(toolboxDrawer, &QAction::triggered, this, &Toolbox::setDrawer, Qt::QueuedConnection);
+            connect(toolboxPower, &QAction::triggered, this, &Toolbox::setPower, Qt::QueuedConnection);
+            connect(toolboxEdges, &QAction::triggered, this, [this](bool enabled) {
+                if (enabled && !SystemAccess::authorized()) showSettings({}, EdgesPage);
+                setEdges(enabled);
+            }, Qt::QueuedConnection);
             menu->addSeparator();
             connect(menu->addAction(tr("Open settings")), &QAction::triggered, this, &Toolbox::ShowSettings);
             toolboxTray->setContextMenu(menu);
@@ -743,6 +980,8 @@ private:
             });
         }
         toolboxAwake->setChecked(bool(awake));
+        toolboxPower->setChecked(bool(power));
+        toolboxEdges->setChecked(bool(edges));
         toolboxDrawer->setEnabled(drawerEnabled.has_value());
         toolboxDrawer->setChecked(drawerEnabled.value_or(false));
     }
@@ -773,7 +1012,7 @@ private:
         }
         untilAction = menu->addAction(tr("Keep awake until…"));
         connect(untilAction, &QAction::triggered, this, [this] {
-            showSettings(awakeTray->providedToken(), 1);
+            showSettings(awakeTray->providedToken(), AwakePage);
             bool accepted = false;
             const auto end = chooseEndTime(&accepted);
             if (accepted) {
@@ -787,7 +1026,7 @@ private:
         screenAction->setCheckable(true);
         connect(screenAction, &QAction::triggered, this, &Toolbox::setScreen);
         menu->addSeparator();
-        const auto openAwakeSettings = [this] { showSettings(awakeTray->providedToken(), 1); };
+        const auto openAwakeSettings = [this] { showSettings(awakeTray->providedToken(), AwakePage); };
         connect(menu->addAction(tr("Open settings")), &QAction::triggered, this, openAwakeSettings);
         connect(menu->addAction(tr("Exit")), &QAction::triggered, this, [this] {
             enableAwake(false);
@@ -860,6 +1099,20 @@ private:
             window->sync(awake.get(), keepScreen());
             window->syncDrawer(drawerEnabled);
         }
+        if (window) window->syncControls(power.get(), edges.get(), access, settings.value(u"startup/enabled"_s, true).toBool());
+        if (toolboxPower) {
+            toolboxPower->setEnabled(!power || !power->applying());
+            toolboxEdges->setEnabled(edges || TouchpadEdges::unavailableReason().isEmpty());
+        }
+        if (powerTray) {
+            const auto available = power->available();
+            const bool allowed = SystemAccess::authorized();
+            for (auto it = powerTrayActions.cbegin(); it != powerTrayActions.cend(); ++it) {
+                it.value()->setEnabled(!power->busy() && (!power->managed() || allowed) && available.contains(it.key()));
+                it.value()->setChecked(power->current() == it.key());
+            }
+            powerTray->setToolTip(powerIcon(), tr("Power Profiles"), PowerProfiles::label(power->current()));
+        }
         if (!awake) {
             return;
         }
@@ -884,7 +1137,15 @@ private:
     }
 
     QSettings settings;
+    SystemAccess access;
     SettingsWindow *window{};
+    std::unique_ptr<PowerProfiles> power;
+    std::unique_ptr<TouchpadEdges> edges;
+    std::unique_ptr<KStatusNotifierItem> powerTray;
+    QHash<QString, QAction *> powerTrayActions;
+    bool disablePowerAfterApply = false;
+    QAction *toolboxPower{};
+    QAction *toolboxEdges{};
     std::unique_ptr<Awake> awake;
     std::unique_ptr<KStatusNotifierItem> toolboxTray;
     std::unique_ptr<KStatusNotifierItem> awakeTray;
@@ -904,8 +1165,11 @@ int main(int argc, char **argv)
     const bool background = argc == 2 && QByteArrayView(argv[1]) == "--background";
     if (background) {
         const QSettings stored(u"Long Weekend Labs"_s, u"Linux Power Toys"_s);
-        if (!stored.value(u"awake/enabled"_s, false).toBool()
-            && !stored.value(u"drawer/enabled"_s, false).toBool()) {
+        if (!stored.value(u"startup/enabled"_s, true).toBool()
+            || (!stored.value(u"awake/enabled"_s, false).toBool()
+                && !stored.value(u"power/enabled"_s, true).toBool()
+                && !stored.value(u"edges/enabled"_s, false).toBool()
+                && !stored.value(u"drawer/enabled"_s, false).toBool())) {
             return 0;
         }
     }

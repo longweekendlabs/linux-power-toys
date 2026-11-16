@@ -1,0 +1,26 @@
+#!/usr/bin/python3 -IB
+"""One-time, administrator-authorized enrollment for the two scoped helpers."""
+
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from permissions import authorized_session, grant, granted
+
+
+def main(args: list[str]) -> int:
+    if args == ["status"]:
+        return 0 if granted(os.getuid()) else 1
+    if args == ["authorize"]:
+        try:
+            grant(authorized_session(require_grant=False).uid)
+            return 0
+        except (KeyError, OSError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 1
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

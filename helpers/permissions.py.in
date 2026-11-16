@@ -1,0 +1,76 @@
+"""Authorization shared by the fixed Linux Power Toys helpers."""
+
+import ctypes as C
+import os
+import pwd
+import tempfile
+from pathlib import Path
+
+GRANTS = Path("@LPT_GRANTS@")
+
+
+def _identity(uid: int) -> tuple[Path, str]:
+    name = pwd.getpwuid(uid).pw_name
+    return GRANTS / str(uid), name
+
+
+def granted(uid: int) -> bool:
+    try:
+        path, name = _identity(uid)
+        return path.stat().st_uid == 0 and path.read_text(encoding="utf-8").strip() == name
+    except (KeyError, OSError, ValueError):
+        return False
+
+
+def grant(uid: int) -> None:
+    path, name = _identity(uid)
+    if granted(uid):
+        return
+    with tempfile.NamedTemporaryFile(dir=GRANTS, encoding="utf-8", mode="w", delete=False) as file:
+        temporary = Path(file.name)
+        try:
+            file.write(name + "\n")
+            file.close()
+            temporary.chmod(0o644)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+class Session:
+    def __init__(self, uid: int) -> None:
+        self.lib = C.CDLL("libsystemd.so.0")
+        self.libc = C.CDLL("libc.so.6")
+        self.libc.free.argtypes = [C.c_void_p]
+        self.uid = uid
+        self.id = self._string(self.lib.sd_uid_get_display, C.c_uint(uid))
+        self.require_active()
+        if self._string(self.lib.sd_session_get_seat, self.id) != b"seat0":
+            raise OSError("Use the local KDE session on the primary seat.")
+
+    def _string(self, getter, key) -> bytes:
+        value = C.c_char_p()
+        if getter(key, C.byref(value)) < 0:
+            raise OSError("Could not identify the local desktop session.")
+        try:
+            return value.value
+        finally:
+            self.libc.free(C.cast(value, C.c_void_p))
+
+    def require_active(self) -> None:
+        if (self.lib.sd_session_is_active(self.id) != 1
+                or self.lib.sd_session_is_remote(self.id) != 0
+                or self._string(self.lib.sd_session_get_type, self.id) != b"wayland"):
+            raise OSError("An active local Wayland session is required.")
+
+
+def authorized_session(require_grant: bool = True) -> Session:
+    if os.geteuid() != 0:
+        raise OSError("Start this action from Linux Power Toys.")
+    uid = int(os.environ.get("PKEXEC_UID", "0"))
+    if uid <= 0:
+        raise OSError("Start this action from the desktop user session.")
+    session = Session(uid)
+    if require_grant and not granted(uid):
+        raise OSError("Set up system access in Linux Power Toys first.")
+    return session

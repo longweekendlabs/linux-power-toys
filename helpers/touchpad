@@ -1,0 +1,331 @@
+#!/usr/bin/python3 -IB
+"""Optional multitouch relay for Linux Power Toys's Linux touchpad edge controls."""
+from __future__ import annotations
+
+import ctypes as C
+import errno
+import os
+import pwd
+import select
+import stat
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from permissions import authorized_session
+EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+SYN_REPORT = 0
+BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_TOUCH = 0x110, 0x111, 0x112, 0x14A
+MT_SLOT, MT_X, MT_Y, MT_ID = 0x2F, 0x35, 0x36, 0x39
+_PENDING_SECONDS = 0.23
+
+
+class _Gesture:
+    """Decide per contact. Once pointer movement is passed on, keep passing it."""
+
+    def __init__(self, x: tuple[int, int], y: tuple[int, int]) -> None:
+        self.x, self.y = x, y
+        self.slot = 0
+        self.contacts: dict[int, list[int | None]] = {}
+        self.mode = "pass"
+        self.edge = ""
+        self.origin = (0.0, 0.0)
+        self.anchor_y = 0.0
+        self.last_action = 0.0
+        self.deadline = 0.0
+        self.buffer: list[list[tuple[int, int, int]]] = []
+
+    def _normalize(self, value: int, extent: tuple[int, int]) -> float:
+        return (value - extent[0]) / (extent[1] - extent[0])
+
+    def expire(self, now: float) -> list[list[tuple[int, int, int]]]:
+        if self.mode == "candidate" and now >= self.deadline:
+            return self._flush()
+        return []
+
+    def _flush(self) -> list[list[tuple[int, int, int]]]:
+        output, self.buffer = self.buffer, []
+        self.mode = "pass"
+        return output
+
+    def frame(self, events: list[tuple[int, int, int]], now: float):
+        before = len(self.contacts)
+        clicked = False
+        for kind, code, value in events:
+            if kind == EV_ABS:
+                if code == MT_SLOT:
+                    self.slot = value
+                elif code == MT_ID:
+                    if value < 0:
+                        self.contacts.pop(self.slot, None)
+                    else:
+                        self.contacts[self.slot] = [None, None]
+                elif code in (MT_X, MT_Y) and self.slot in self.contacts:
+                    self.contacts[self.slot][int(code == MT_Y)] = value
+            elif kind == EV_KEY and code in (BTN_LEFT, BTN_RIGHT, BTN_MIDDLE):
+                clicked = True
+        after = len(self.contacts)
+        if self.mode == "consume":
+            if not after:
+                self.mode = "pass"
+                return [[(EV_ABS, MT_SLOT, self.slot), (EV_SYN, SYN_REPORT, 0)]], ""
+            elif after > 1 or clicked:
+                self.mode = "cancelled"
+            return [], self._adjust(now) if self.mode == "consume" else ""
+        if self.mode == "cancelled":
+            if not after:
+                self.mode = "pass"
+                return [[(EV_ABS, MT_SLOT, self.slot), (EV_SYN, SYN_REPORT, 0)]], ""
+            return [], ""
+
+        if before == 0 and after == 1 and not clicked:
+            point = self._point()
+            if point is not None:
+                x, y = point
+                if y < 0.86 and (x < 0.085 or x > 0.915):
+                    self.origin = point
+                    self.anchor_y = y
+                    self.deadline = now + _PENDING_SECONDS
+                    self.edge = "brightness" if x < 0.085 else "volume"
+                    self.mode = "candidate"
+
+        if self.mode != "candidate":
+            return [events], ""
+        self.buffer.append(events)
+        if after != 1 or clicked or now >= self.deadline:
+            return self._flush(), ""
+        point = self._point()
+        if point is None:
+            return [], ""
+        x, y = point
+        dx, dy = abs(x - self.origin[0]), abs(y - self.origin[1])
+        if dx > 0.055 or (dx > 0.023 and dx >= dy):
+            return self._flush(), ""
+        if dy >= 0.045 and dy >= dx * 1.7:
+            self.mode = "consume"
+            self.buffer.clear()
+            return [], self._adjust(now)
+        return [], ""
+
+    def _point(self) -> tuple[float, float] | None:
+        if len(self.contacts) == 1:
+            x, y = next(iter(self.contacts.values()))
+            if x is not None and y is not None:
+                return self._normalize(x, self.x), self._normalize(y, self.y)
+        return None
+
+    def _adjust(self, now: float) -> str:
+        point = self._point()
+        if point is None:
+            return ""
+        delta = self.anchor_y - point[1]
+        if abs(delta) < 0.04 or now - self.last_action < 0.065:
+            return ""
+        self.anchor_y -= 0.04 if delta > 0 else -0.04
+        self.last_action = now
+        return self.edge + ("+" if delta > 0 else "-")
+
+
+class _InputEvent(C.Structure):
+    _fields_ = [("seconds", C.c_long), ("micros", C.c_long), ("kind", C.c_ushort),
+                ("code", C.c_ushort), ("value", C.c_int)]
+
+
+class _Relay:
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
+        self.device, self.virtual = C.c_void_p(), C.c_void_p()
+        self.grabbed = False
+        self.lib = lib = C.CDLL("libevdev.so.2")
+        ptr, integer, u = C.c_void_p, C.c_int, C.c_uint
+        for name, args, result in (
+            ("new_from_fd", [integer, C.POINTER(ptr)], integer),
+            ("free", [ptr], None),
+            ("get_abs_minimum", [ptr, u], integer),
+            ("get_abs_maximum", [ptr, u], integer),
+            ("has_event_code", [ptr, u, u], integer),
+            ("get_event_value", [ptr, u, u], integer),
+            ("get_current_slot", [ptr], integer),
+            ("grab", [ptr, integer], integer),
+            ("next_event", [ptr, u, C.POINTER(_InputEvent)], integer),
+            ("uinput_create_from_device", [ptr, integer, C.POINTER(ptr)], integer),
+            ("uinput_get_devnode", [ptr], C.c_char_p),
+            ("uinput_write_event", [ptr, u, u, integer], integer),
+            ("uinput_destroy", [ptr], None),
+        ):
+            func = getattr(lib, "libevdev_" + name)
+            func.argtypes, func.restype = args, result
+
+    @staticmethod
+    def _check(result: int, action: str) -> None:
+        if result < 0:
+            raise OSError(-result, f"{action}: {os.strerror(-result)}")
+
+    def create(self) -> str:
+        lib = self.lib
+        self._check(lib.libevdev_new_from_fd(self.fd, C.byref(self.device)), "Open the touchpad")
+        touchpad_keys = {BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, 0x145, 0x148, BTN_TOUCH, 0x14D, 0x14E, 0x14F}
+        if any(lib.libevdev_has_event_code(self.device, EV_KEY, code) and code not in touchpad_keys
+               for code in range(0x300)):
+            raise OSError("The selected touchpad advertises unexpected button or keyboard codes.")
+        for code in (MT_SLOT, MT_ID, MT_X, MT_Y):
+            if not lib.libevdev_has_event_code(self.device, EV_ABS, code):
+                raise OSError("The touchpad does not expose multitouch slots.")
+        self.x, self.y = (
+            (lib.libevdev_get_abs_minimum(self.device, code), lib.libevdev_get_abs_maximum(self.device, code))
+            for code in (MT_X, MT_Y)
+        )
+        if any(top <= bottom for bottom, top in (self.x, self.y)):
+            raise OSError("The touchpad reports invalid coordinate bounds.")
+        # -2 tells libevdev to open /dev/uinput and manage the fd itself.
+        self._check(lib.libevdev_uinput_create_from_device(self.device, -2, C.byref(self.virtual)),
+                    "Create the virtual touchpad")
+        name = lib.libevdev_uinput_get_devnode(self.virtual)
+        if not name:
+            raise OSError("Could not identify the virtual touchpad.")
+        return os.path.basename(os.fsdecode(name))
+
+    def drain(self):
+        event = _InputEvent()
+        while True:
+            rc = self.lib.libevdev_next_event(self.device, 2, C.byref(event))
+            if rc == -errno.EAGAIN:
+                return
+            # Fail open on queue overflow: closing the fd releases the original
+            # device, and removing the clone clears any virtual contacts.
+            if rc != 0:
+                raise OSError("The touchpad stream changed. Original input has been restored.")
+            yield event.kind, event.code, event.value
+
+    def grab(self) -> _Gesture:
+        expires = time.monotonic() + 1.75
+        for _event in self.drain():
+            pass
+        while any(self.lib.libevdev_get_event_value(self.device, EV_KEY, key)
+                  for key in (BTN_TOUCH, BTN_LEFT, BTN_RIGHT, BTN_MIDDLE)):
+            remaining = expires - time.monotonic()
+            if remaining <= 0 or not select.select([self.fd], [], [], remaining)[0]:
+                raise OSError("Lift your fingers before enabling touchpad edges.")
+            for _event in self.drain():
+                pass
+        self._check(self.lib.libevdev_grab(self.device, 3), "Reserve touchpad input")
+        self.grabbed = True
+        gesture = _Gesture(self.x, self.y)
+        gesture.slot = max(0, self.lib.libevdev_get_current_slot(self.device))
+        return gesture
+
+    def emit(self, frames: list[list[tuple[int, int, int]]]) -> None:
+        for frame in frames:
+            for kind, code, value in frame:
+                self._check(self.lib.libevdev_uinput_write_event(self.virtual, kind, code, value),
+                            "Forward touchpad input")
+
+    def close(self) -> None:
+        if self.grabbed:
+            self.lib.libevdev_grab(self.device, 4)
+            self.grabbed = False
+        if self.virtual:
+            self.lib.libevdev_uinput_destroy(self.virtual)
+            self.virtual = C.c_void_p()
+        if self.device:
+            self.lib.libevdev_free(self.device)
+            self.device = C.c_void_p()
+
+
+def _physical_touchpad() -> tuple[Path, int]:
+    candidates = []
+    for event in Path("/sys/class/input").glob("event*"):
+        # Reject virtual devices and all non-I2C inputs, including keyboards,
+        # mice, external devices and USB receivers.
+        if "/i2c-" not in str(event.resolve()) or "/virtual/" in str(event.resolve()):
+            continue
+        try:
+            major, minor = map(int, (event / "dev").read_text().strip().split(":"))
+            tags = Path(f"/run/udev/data/c{major}:{minor}").read_text().splitlines()
+            if ("E:ID_INPUT_TOUCHPAD=1" in tags
+                    and "E:ID_INPUT_TOUCHPAD_INTEGRATION=internal" in tags
+                    and "E:ID_INPUT_KEYBOARD=1" not in tags
+                    and not any(tag.startswith("E:ID_SEAT=") and tag != "E:ID_SEAT=seat0" for tag in tags)):
+                candidates.append((Path("/dev/input") / event.name, os.makedev(major, minor)))
+        except (ValueError, OSError):
+            continue
+    if len(candidates) != 1:
+        raise OSError("Exactly one built-in multitouch I2C touchpad is required.")
+    return candidates[0]
+
+
+def _run_relay() -> None:
+    session = authorized_session()
+    user = pwd.getpwuid(session.uid)
+    monitor = C.c_void_p()
+    if session.lib.sd_login_monitor_new(b"session", C.byref(monitor)) < 0:
+        raise OSError("Could not watch the desktop session.")
+    try:
+        session_fd = session.lib.sd_login_monitor_get_fd(monitor)
+        if session_fd < 0:
+            raise OSError("Could not watch the desktop session.")
+        _relay_events(user, session, session_fd, monitor)
+    finally:
+        session.lib.sd_login_monitor_unref(monitor)
+
+
+def _relay_events(user, session, session_fd: int, session_monitor) -> None:
+    path, device_id = _physical_touchpad()
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISCHR(info.st_mode) or info.st_rdev != device_id:
+            raise OSError("The selected touchpad was replaced.")
+        relay = _Relay(fd)
+        try:
+            name = relay.create()
+            os.setgroups([])
+            os.setgid(user.pw_gid)
+            os.setuid(user.pw_uid)
+            # Retained device descriptors stay private after dropping root.
+            if session.libc.prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE
+                raise OSError("Could not isolate the touchpad relay.")
+            # Linux Power Toys acknowledges only after KWin has registered the clone.
+            # A dead GUI closes stdin and automatically releases the grab.
+            print("DEVICE " + name, flush=True)
+            if not select.select([0], [], [], 5.0)[0] or os.read(0, 64) != b"ready\n":
+                raise OSError("KWin did not acknowledge the virtual touchpad.")
+            session.require_active()
+            gesture = relay.grab()
+            print("ON", flush=True)
+            frame = []
+            while True:
+                now = time.monotonic()
+                relay.emit(gesture.expire(now))
+                timeout = max(0.0, gesture.deadline - now) if gesture.mode == "candidate" else None
+                ready = select.select([0, fd, session_fd], [], [], timeout)[0]
+                if session_fd in ready:
+                    session.require_active()
+                    session.lib.sd_login_monitor_flush(session_monitor)
+                if 0 in ready:
+                    return
+                if fd not in ready:
+                    continue
+                for event in relay.drain():
+                    frame.append(event)
+                    if event[:2] == (EV_SYN, SYN_REPORT):
+                        outgoing, action = gesture.frame(frame, time.monotonic())
+                        relay.emit(outgoing)
+                        if action:
+                            print(action, flush=True)
+                        frame = []
+        finally:
+            relay.close()
+    finally:
+        os.close(fd)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["start"] or os.geteuid() != 0 or "PKEXEC_UID" not in os.environ:
+        raise SystemExit("Enable touchpad edges from a supported Linux Power Toys installation.")
+    try:
+        _run_relay()
+    except (KeyError, OSError, ValueError) as e:
+        print(str(e), file=sys.stderr, flush=True)
+        raise SystemExit(1)
