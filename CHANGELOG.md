@@ -4,9 +4,11 @@
 
 ### Added
 
+- Keep your computer awake from the coffee-cup tray menu, with timed and indefinite modes and a separate display switch.
+- Drag tray icons into or out of the Drawer, and reorder icons directly on the Plasma panel.
 - Switch Fedora power profiles from the tray. Supported Dell systems also show Cool and Gaming.
 - Use the left touchpad edge for brightness and the right edge for volume on supported KDE Wayland sessions.
-- Approve Dell presets and touchpad controls once for your account. The approval persists across reboot.
+- Save one administrator approval per account for Dell presets and touchpad controls.
 - Choose whether Linux Power Toys starts silently at KDE login.
 - See Cleaner marked In development in Settings.
 
@@ -17,4 +19,4 @@
 
 ### Fixed
 
-- Build Tray Icon Drawer for Fedora 45 with Plasma 6.8.3 and explain how to enable it when its companion RPM is missing or has yet to load.
+- Enable Tray Icon Drawer on Fedora 45 with the matching companion RPM. Sign out and back in after installation so Plasma loads it.
