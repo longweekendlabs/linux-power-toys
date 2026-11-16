@@ -14,6 +14,7 @@
 
 ### Changed
 
+- Add screenshots of the Settings pages, tray menus, and open Drawer to the README.
 - Click either mouse button on the Power icon to open the profile menu. Open settings is available in the menu.
 - The Power icon shows a distinct symbol and color for each confirmed active profile.
 
