@@ -1,12 +1,18 @@
+%if 0%{?fedora} == 45
+%global plasma_version 6.8.3
+%global plasma_release 1.fc45
+%global qt_release 6.11.2-3.fc45
+%else
 %global plasma_version 6.8.2
 %global plasma_release 1.fc44
 %global qt_release 6.11.2-3.fc44
+%endif
 %global trayroot %{_libdir}/linux-power-toys/plasma
 
 Name:           linux-power-toys-drawer
-Version:        0.1
-Release:        0.1.preview%{?dist}
-Summary:        Tray Icon Drawer integration for Fedora 44 Plasma 6.8.2
+Version:        0.2
+Release:        0.2.preview%{?dist}
+Summary:        Tray Icon Drawer integration for Fedora KDE Plasma %{plasma_version}
 License:        GPL-2.0-or-later AND LGPL-2.0-or-later
 Source0:        linux-power-toys-%{version}.tar.gz
 Source1:        https://download.kde.org/stable/plasma/%{plasma_version}/plasma-workspace-%{plasma_version}.tar.xz
@@ -45,12 +51,12 @@ and the overflow drawer. The integration loads when the Plasma session starts.
 %prep
 %setup -q -n linux-power-toys-%{version} -a 1
 patch --batch --forward --fuzz=0 -p1 -d plasma-workspace-%{plasma_version} \
-  -i "$PWD/plasma/plasma-workspace-%{plasma_version}-tray-drawer.patch"
+  -i "$PWD/plasma/plasma-workspace-6.8.2-tray-drawer.patch"
 test -f plasma-workspace-%{plasma_version}/applets/systemtray/qml/DrawerDropTarget.qml
 
 %build
 cmake -S plasma -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_SKIP_RPATH=ON \
+  -DPLASMA_VERSION=%{plasma_version} -DCMAKE_SKIP_RPATH=ON \
   -DPLASMA_WORKSPACE_SOURCE="$PWD/plasma-workspace-%{plasma_version}"
 cmake --build build --target org.kde.plasma.systemtray systemtrayplugin %{?_smp_mflags}
 

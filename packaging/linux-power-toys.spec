@@ -1,6 +1,6 @@
 Name:           linux-power-toys
 Version:        0.2
-Release:        0.1.preview%{?dist}
+Release:        0.2.preview%{?dist}
 Summary:        Desktop utilities for KDE Plasma
 License:        LicenseRef-Local-Preview AND MIT
 Source0:        %{name}-%{version}.tar.gz
@@ -28,7 +28,7 @@ Desktop toolbox with Always Awake, Power and Touchpad Edges for KDE Plasma.
 %build
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX=%{_prefix} -DCMAKE_INSTALL_SYSCONFDIR=%{_sysconfdir} \
-  -DCMAKE_INSTALL_LIBEXECDIR=%{_libexecdir} -DCMAKE_INSTALL_LOCALSTATEDIR=%{_localstatedir}
+  -DCMAKE_INSTALL_LIBDIR=%{_libdir} -DCMAKE_INSTALL_LIBEXECDIR=%{_libexecdir} -DCMAKE_INSTALL_LOCALSTATEDIR=%{_localstatedir}
 cmake --build build %{?_smp_mflags}
 
 %install

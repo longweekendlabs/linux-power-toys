@@ -20,7 +20,8 @@ configure_file(helpers/permissions.py.in permissions.py @ONLY)
 
 add_executable(linux-power-toys src/main.cpp src/controls.cpp src/controls.h)
 target_compile_definitions(linux-power-toys PRIVATE
-    LPT_HELPERS="${LPT_HELPERS}" LPT_POLICY="${LPT_POLICY}" LPT_GRANTS="${LPT_GRANTS}")
+    LPT_HELPERS="${LPT_HELPERS}" LPT_POLICY="${LPT_POLICY}" LPT_GRANTS="${LPT_GRANTS}"
+    LPT_DRAWER_PLUGIN="${CMAKE_INSTALL_FULL_LIBDIR}/linux-power-toys/plasma/plugins/plasma/applets/org.kde.plasma.systemtray.so")
 file(GLOB awake_icons CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/awake/*.png")
 qt_add_resources(linux-power-toys awake_artwork
     PREFIX /awake

@@ -16,10 +16,12 @@
 #include <QDBusMessage>
 #include <QDBusReply>
 #include <QDBusServiceWatcher>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -52,9 +54,74 @@ constexpr std::array minutes{15, 30, 60, 120};
 enum class Mode { Passive, Timed, Until, Indefinite };
 enum Page { Home, AwakePage, PowerPage, EdgesPage, CleanerPage, DrawerPage, PageCount };
 
-QIcon powerIcon()
+const QIcon &powerIcon(const QString &profile = {})
 {
-    return QIcon::fromTheme(u"battery-profile-performance"_s, QIcon::fromTheme(u"battery"_s));
+    static const auto icons = [] {
+        const std::array colors{QColor(u"#a4b8cc"_s), QColor(u"#b8ed82"_s), QColor(u"#88d5ff"_s),
+                                QColor(u"#7aede0"_s), QColor(u"#ffcb6e"_s), QColor(u"#e4b1ff"_s)};
+        std::array<QIcon, colors.size()> result;
+        for (size_t i = 0; i < colors.size(); ++i) {
+            for (const int size : {16, 22, 32, 48, 64}) {
+                QPixmap pixmap(size, size);
+                pixmap.fill(Qt::transparent);
+                QPainter painter(&pixmap);
+                painter.setRenderHint(QPainter::Antialiasing);
+                painter.scale(size / 24.0, size / 24.0);
+                const auto &color = colors[i];
+                const QPolygonF badge{{12, 1.4}, {21.2, 6.1}, {21.2, 17.9}, {12, 22.6}, {2.8, 17.9}, {2.8, 6.1}};
+                painter.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter.setBrush(QColor(u"#172132"_s));
+                painter.drawPolygon(badge);
+                painter.setBrush(Qt::NoBrush);
+                painter.setPen(QPen(color, 2.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                switch (i) {
+                case 1: { // Power Saver
+                    QPainterPath leaf;
+                    leaf.moveTo(8, 16);
+                    leaf.cubicTo(4.5, 10.2, 11.7, 7, 17.2, 6.8);
+                    leaf.cubicTo(17.5, 13.7, 14.2, 18.2, 8, 16);
+                    painter.setPen(Qt::NoPen);
+                    painter.fillPath(leaf, color);
+                    painter.setPen(QPen(QColor(u"#172132"_s), 1.25, Qt::SolidLine, Qt::RoundCap));
+                    painter.drawLine(QPointF(7.3, 16.9), QPointF(14.3, 10.1));
+                    break;
+                }
+                case 2: // Cool
+                    painter.drawLine(QPointF(12, 6.5), QPointF(12, 17.5));
+                    painter.drawLine(QPointF(7.2, 9.2), QPointF(16.8, 14.8));
+                    painter.drawLine(QPointF(7.2, 14.8), QPointF(16.8, 9.2));
+                    break;
+                case 3: // Balanced
+                    painter.drawLine(QPointF(7.4, 9.6), QPointF(16.6, 9.6));
+                    painter.drawLine(QPointF(7.4, 14.4), QPointF(16.6, 14.4));
+                    break;
+                case 4: // Performance
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(color);
+                    painter.drawPolygon(QPolygonF{{13.8, 4.8}, {7, 13.5}, {11.1, 13.5},
+                                                  {10.2, 19.2}, {17, 10.1}, {12.8, 10.1}});
+                    break;
+                case 5: { // Gaming
+                    painter.setPen(QPen(color, 1.55, Qt::SolidLine, Qt::RoundCap));
+                    painter.drawRoundedRect(QRectF(6.2, 8.5, 11.6, 7), 3, 3);
+                    painter.drawLine(QPointF(8.5, 12), QPointF(11.5, 12));
+                    painter.drawLine(QPointF(10, 10.5), QPointF(10, 13.5));
+                    painter.drawPoint(QPointF(14.6, 11.3));
+                    painter.drawPoint(QPointF(16.0, 12.8));
+                    break;
+                }
+                default:
+                    painter.drawArc(QRectF(7, 8, 10, 10), 0, 180 * 16);
+                    painter.drawLine(QPointF(12, 13), QPointF(14, 10.6));
+                    break;
+                }
+                painter.end();
+                result[i].addPixmap(pixmap);
+            }
+        }
+        return result;
+    }();
+    return icons[PowerProfiles::modes().indexOf(profile) + 1];
 }
 
 QIcon toolboxIcon()
@@ -544,7 +611,15 @@ public:
             toggle->setEnabled(enabled.has_value());
             toggle->setChecked(enabled.value_or(false));
         }
-        drawerMessage->setText(enabled ? QString{} : tr("The Plasma drawer integration is unavailable."));
+        if (enabled.has_value()) {
+            drawerMessage->clear();
+        } else if (QFileInfo::exists(QString::fromUtf8(LPT_DRAWER_PLUGIN))) {
+            drawerMessage->setText(tr("Sign out and back in to load the installed Tray Icon Drawer. "
+                                      "The drawer requires a version of the RPM that matches Plasma."));
+        } else {
+            drawerMessage->setText(tr("Install the Tray Icon Drawer RPM for your Plasma version, "
+                                      "then sign out and back in."));
+        }
     }
 
     void syncControls(const PowerProfiles *power, const TouchpadEdges *edges, const SystemAccess &access, bool startup)
@@ -854,17 +929,18 @@ private:
             auto *group = new QActionGroup(menu);
             group->setExclusionPolicy(QActionGroup::ExclusionPolicy::Exclusive);
             for (const auto &id : PowerProfiles::modes()) {
-                auto *action = group->addAction(PowerProfiles::label(id));
+                auto *action = new QAction(powerIcon(id), PowerProfiles::label(id), group);
                 action->setCheckable(true);
                 menu->addAction(action);
                 powerTrayActions.insert(id, action);
                 connect(action, &QAction::triggered, this, [this, id] { selectProfile(id); });
             }
             menu->addSeparator();
-            const auto openPower = [this] { showSettings(powerTray->providedToken(), PowerPage); };
-            connect(menu->addAction(tr("Open settings")), &QAction::triggered, this, openPower);
+            connect(menu->addAction(tr("Open settings")), &QAction::triggered, this, [this] {
+                showSettings(powerTray->providedToken(), PowerPage);
+            });
             powerTray->setContextMenu(menu);
-            connect(powerTray.get(), &KStatusNotifierItem::activateRequested, this, openPower);
+            powerTray->setIsMenu(true);
             connect(power.get(), &PowerProfiles::changed, this, &Toolbox::sync);
             connect(power.get(), &PowerProfiles::applied, this, [this](bool success) {
                 if (!std::exchange(disablePowerAfterApply, false)) return;
@@ -1111,7 +1187,11 @@ private:
                 it.value()->setEnabled(!power->busy() && (!power->managed() || allowed) && available.contains(it.key()));
                 it.value()->setChecked(power->current() == it.key());
             }
-            powerTray->setToolTip(powerIcon(), tr("Power Profiles"), PowerProfiles::label(power->current()));
+            const auto &icon = powerIcon(power->current());
+            if (powerTray->iconPixmap().cacheKey() != icon.cacheKey()) {
+                powerTray->setIconByPixmap(icon);
+            }
+            powerTray->setToolTip(icon, tr("Power Profiles"), PowerProfiles::label(power->current()));
         }
         if (!awake) {
             return;
