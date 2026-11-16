@@ -10,8 +10,8 @@
 %global trayroot %{_libdir}/linux-power-toys/plasma
 
 Name:           linux-power-toys-drawer
-Version:        0.2
-Release:        0.2.preview%{?dist}
+Version:        0.2.1
+Release:        0.1.preview%{?dist}
 Summary:        Tray Icon Drawer integration for Fedora KDE Plasma %{plasma_version}
 License:        GPL-2.0-or-later AND LGPL-2.0-or-later
 Source0:        linux-power-toys-%{version}.tar.gz

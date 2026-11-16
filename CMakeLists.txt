@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
-project(LinuxPowerToys LANGUAGES CXX)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux-power-toys.spec" rpm_version REGEX "^Version:")
+string(REGEX REPLACE "^Version:[ 	]+" "" lpt_version "${rpm_version}")
+project(LinuxPowerToys VERSION "${lpt_version}" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +22,7 @@ configure_file(helpers/permissions.py.in permissions.py @ONLY)
 
 add_executable(linux-power-toys src/main.cpp src/controls.cpp src/controls.h)
 target_compile_definitions(linux-power-toys PRIVATE
+    LPT_VERSION="${PROJECT_VERSION}"
     LPT_HELPERS="${LPT_HELPERS}" LPT_POLICY="${LPT_POLICY}" LPT_GRANTS="${LPT_GRANTS}"
     LPT_DRAWER_PLUGIN="${CMAKE_INSTALL_FULL_LIBDIR}/linux-power-toys/plasma/plugins/plasma/applets/org.kde.plasma.systemtray.so")
 file(GLOB awake_icons CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/awake/*.png")
@@ -27,6 +30,7 @@ qt_add_resources(linux-power-toys awake_artwork
     PREFIX /awake
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/awake"
     FILES ${awake_icons} assets/awake/NOTICE)
+qt_add_resources(linux-power-toys licensing PREFIX /about FILES LICENSE)
 target_link_libraries(linux-power-toys PRIVATE
     Qt6::Widgets Qt6::DBus KF6::StatusNotifierItem KF6::WindowSystem)
 install(TARGETS linux-power-toys)

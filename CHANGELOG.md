@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-16
+
 ### Added
+
+- Open About from Settings for the app version, LWL website, GitHub repository, feedback, and the MIT license.
 
 - Keep your computer awake from the coffee-cup tray menu, with timed and indefinite modes and a separate display switch.
 - Drag tray icons into or out of the Drawer, and reorder icons directly on the Plasma panel.

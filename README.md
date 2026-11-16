@@ -4,6 +4,8 @@
 
 Keep your screen awake while you work, switch power profiles from the panel, and put your tray icons where you want them. Linux Power Toys brings those controls together in one Settings window and runs locally on your machine.
 
+### [Download the Fedora preview](https://github.com/longweekendlabs/linux-power-toys/releases)
+
 ![Linux Power Toys Settings home with a switch for each available tool](docs/screenshots/settings.png)
 
 ## Keep a task running
@@ -36,7 +38,7 @@ Enable each tool separately from the Settings home page. The toolbox can start s
 
 ## Download
 
-Preview RPMs target Fedora KDE on Wayland (x86_64). Public downloads are pending. See [GitHub Releases](https://github.com/longweekendlabs/linux-power-toys/releases) and the [changelog](CHANGELOG.md).
+Preview RPMs target Fedora KDE on Wayland (x86_64). Download the toolbox RPM and the optional, version-matched Drawer RPM from [GitHub Releases](https://github.com/longweekendlabs/linux-power-toys/releases) and the [changelog](CHANGELOG.md).
 
 ## Feedback
 
@@ -44,7 +46,7 @@ Preview RPMs target Fedora KDE on Wayland (x86_64). Public downloads are pending
 
 ## License
 
-The license for the original toolbox code is pending. See the [Awake artwork notice](assets/awake/NOTICE) and the [helper license](helpers/LICENSE) for their terms. Tray Icon Drawer integrates GPL and LGPL Plasma components.
+The original toolbox code is free and open source under the [MIT License](LICENSE). The [Awake artwork notice](assets/awake/NOTICE) credits Microsoft PowerToys. Tray Icon Drawer retains the upstream GPL and LGPL licenses of its Plasma components.
 
 © 2026 Long Weekend Labs
 

@@ -16,7 +16,11 @@
 #include <QDBusMessage>
 #include <QDBusReply>
 #include <QDBusServiceWatcher>
+#include <QDesktopServices>
+#include <QFile>
 #include <QFileInfo>
+#include <QPlainTextEdit>
+#include <QUrl>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
@@ -52,7 +56,7 @@ constexpr uint displayPolicy = 4;
 constexpr uint activeInhibition = 1;
 constexpr std::array minutes{15, 30, 60, 120};
 enum class Mode { Passive, Timed, Until, Indefinite };
-enum Page { Home, AwakePage, PowerPage, EdgesPage, CleanerPage, DrawerPage, PageCount };
+enum Page { Home, AwakePage, PowerPage, EdgesPage, CleanerPage, DrawerPage, AboutPage, PageCount };
 
 const QIcon &powerIcon(const QString &profile = {})
 {
@@ -426,19 +430,19 @@ public:
         nav->setContentsMargins(10, 12, 10, 12);
         nav->setSpacing(4);
         const std::array names{tr("Home"), tr("Always Awake"), tr("Power"), tr("Touchpad Edges"),
-                               tr("Cleaner"), tr("Tray Icon Drawer")};
+                               tr("Cleaner"), tr("Tray Icon Drawer"), tr("About")};
         icons = {QIcon::fromTheme(u"go-home"_s), QIcon(u":/awake/awake-32.png"_s), powerIcon(),
                  QIcon::fromTheme(u"input-touchpad"_s), QIcon::fromTheme(u"edit-clear"_s),
-                 QIcon::fromTheme(u"view-grid"_s)};
+                 QIcon::fromTheme(u"view-grid"_s), QIcon::fromTheme(u"help-about"_s)};
         for (int index = 0; index < int(names.size()); ++index) {
             auto *button = new QPushButton(icons[index], names[index]);
             button->setCheckable(true);
             button->setObjectName(u"nav"_s);
             navButtons[index] = button;
+            if (index == AboutPage) nav->addStretch();
             nav->addWidget(button);
             connect(button, &QPushButton::clicked, this, [this, index] { openPage(index); });
         }
-        nav->addStretch();
         layout->addWidget(sidebar);
         layout->addWidget(pages, 1);
 
@@ -527,6 +531,79 @@ public:
         drawerMessage->setWordWrap(true);
         drawer->addWidget(drawerMessage);
         drawer->addStretch();
+
+        auto *aboutWidget = new QWidget;
+        auto *about = new QVBoxLayout(aboutWidget);
+        about->setContentsMargins(32, 29, 32, 32);
+        about->setSpacing(10);
+        auto *mark = new QLabel;
+        mark->setPixmap(toolboxIcon().pixmap(56, 56));
+        about->addWidget(mark);
+        auto *name = new QLabel(tr("Linux Power Toys"));
+        name->setStyleSheet(u"font-size: 20px; font-weight: 700;"_s);
+        about->addWidget(name);
+        auto *version = new QLabel(tr("Version %1 · A performance-first Linux desktop toolbox for KDE Plasma on Wayland.")
+                                       .arg(QCoreApplication::applicationVersion()));
+        version->setObjectName(u"muted"_s);
+        version->setWordWrap(true);
+        about->addWidget(version);
+        auto *description = new QLabel(tr("Keep tasks awake, switch power profiles, and organize the Plasma tray. "
+                                          "Your preferences are stored on this computer."));
+        description->setWordWrap(true);
+        about->addWidget(description);
+
+        auto *license = new QPushButton(tr("FREE && OPEN SOURCE · MIT"));
+        about->addWidget(license, 0, Qt::AlignLeft);
+        connect(license, &QPushButton::clicked, this, [this] {
+            QDialog dialog(this);
+            dialog.setWindowTitle(tr("Linux Power Toys License"));
+            dialog.resize(615, 420);
+            auto *layout = new QVBoxLayout(&dialog);
+            auto *text = new QPlainTextEdit;
+            text->setReadOnly(true);
+            QFile file(u":/about/LICENSE"_s);
+            if (file.open(QIODevice::ReadOnly)) text->setPlainText(QString::fromUtf8(file.readAll()));
+            layout->addWidget(text);
+            auto *close = new QDialogButtonBox(QDialogButtonBox::Close);
+            connect(close, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+            layout->addWidget(close);
+            dialog.exec();
+        });
+        auto *terms = new QLabel(tr("The toolbox uses the MIT License. Bundled KDE Drawer components use their upstream GPL and LGPL licenses."));
+        terms->setObjectName(u"muted"_s);
+        terms->setWordWrap(true);
+        about->addWidget(terms);
+
+        auto *links = new QHBoxLayout;
+        const std::array destinations{
+            std::pair{tr("Website"), u"https://longweekendlabs.app"_s},
+            std::pair{tr("GitHub"), u"https://github.com/longweekendlabs/linux-power-toys"_s},
+            std::pair{tr("Report an issue"), u"https://github.com/longweekendlabs/linux-power-toys/issues"_s},
+        };
+        for (const auto &[label, url] : destinations) {
+            auto *button = new QPushButton(label);
+            button->setToolTip(url);
+            connect(button, &QPushButton::clicked, this, [url] { QDesktopServices::openUrl(QUrl(url)); });
+            links->addWidget(button);
+        }
+        links->addStretch();
+        about->addLayout(links);
+        about->addStretch();
+
+        auto *footer = new QHBoxLayout;
+        auto *badge = new QLabel(u"LWL"_s);
+        badge->setFixedSize(24, 24);
+        badge->setAlignment(Qt::AlignCenter);
+        badge->setStyleSheet(u"QLabel { color: #79e2ec; background: #24363e; border: 1px solid #79e2ec; "
+                             "border-radius: 5px; font-size: 10px; font-weight: bold; }"_s);
+        footer->addWidget(badge);
+        auto *credit = new QLabel(tr("Made with %1 by Long Weekend Labs").arg(u"<span style='color:#79e2ec'>♥</span>"_s));
+        credit->setTextFormat(Qt::RichText);
+        footer->addWidget(credit);
+        footer->addStretch();
+        about->addLayout(footer);
+        about->addWidget(new QLabel(u"© 2026 Long Weekend Labs"_s));
+        pages->addWidget(aboutWidget);
 
         for (auto *toggle : {alwaysHome, alwaysPage}) {
             connect(toggle, &QCheckBox::toggled, this, &SettingsWindow::enableAwake);
@@ -1255,6 +1332,7 @@ int main(int argc, char **argv)
     }
     QApplication app(argc, argv);
     app.setApplicationName(u"Linux Power Toys"_s);
+    app.setApplicationVersion(QString::fromUtf8(LPT_VERSION));
     app.setOrganizationName(u"Long Weekend Labs"_s);
     app.setDesktopFileName(service);
     app.setQuitOnLastWindowClosed(false);

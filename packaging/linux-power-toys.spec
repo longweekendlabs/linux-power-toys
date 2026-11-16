@@ -1,8 +1,8 @@
 Name:           linux-power-toys
-Version:        0.2
-Release:        0.2.preview%{?dist}
+Version:        0.2.1
+Release:        0.1.preview%{?dist}
 Summary:        Desktop utilities for KDE Plasma
-License:        LicenseRef-Local-Preview AND MIT
+License:        MIT
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  cmake
@@ -35,7 +35,7 @@ cmake --build build %{?_smp_mflags}
 DESTDIR=%{buildroot} cmake --install build
 
 %files
-%license assets/awake/NOTICE helpers/LICENSE
+%license LICENSE assets/awake/NOTICE
 %{_bindir}/linux-power-toys
 %{_datadir}/applications/org.longweekendlabs.LinuxPowerToys.desktop
 %{_sysconfdir}/xdg/autostart/org.longweekendlabs.LinuxPowerToys.desktop
